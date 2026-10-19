@@ -1,30 +1,34 @@
 --[[
 	Ghosted Menu - universal executor script (PC + mobile)
 
-
 	Tabs:   Move / Visuals / Players / Misc / Config
 	Open:   RightShift (rebindable in Config) or tap the floating ghost
 	Binds:  right-click any toggle (PC), press a key to bind it, Esc clears it
 	Saves:  toggles, sliders, binds, options, accent color and menu key -> GhostedMenu_settings.json
-			(needs writefile/readfile/isfile; works fine without them, just doesn't persist)
 	Reload: re-running the script cleanly unloads the previous copy first
+
+	Changes from original:
+	  - Fly: deprecated BodyVelocity/BodyGyro → LinearVelocity + AlignOrientation
+	          with legacy fallback for old executors
+	  - Speed: re-captures speedOrig after respawn so restore works correctly
+	  - Anti-void: fixed inverted floor check (was saving while airborne)
+	  - Players: added Fling button + fling power slider (Misc tab)
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
+local Players        = game:GetService("Players")
+local TweenService   = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
-local Lighting = game:GetService("Lighting")
-local Stats = game:GetService("Stats")
+local RunService     = game:GetService("RunService")
+local HttpService    = game:GetService("HttpService")
+local Lighting       = game:GetService("Lighting")
+local Stats          = game:GetService("Stats")
 local TeleportService = game:GetService("TeleportService")
 
 if not Players.LocalPlayer then Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end
 local player = Players.LocalPlayer
 
--- unload any previous copy before building a new one
 local env = (typeof(getgenv) == "function" and getgenv()) or _G
 if env.GhostedMenuUnload then pcall(env.GhostedMenuUnload) end
 
@@ -48,6 +52,7 @@ local kEspNameColor     = Color3.fromRGB(255, 255, 255)
 local kTracerColor      = Color3.fromRGB(110, 110, 255)
 local kChamsFill        = Color3.fromRGB(255, 70, 90)
 local kChamsOutline     = Color3.fromRGB(255, 255, 255)
+local kDefaultFlingPower = 5000
 
 local kRowBg      = Color3.fromRGB(28, 28, 36)
 local kRowBgHover = Color3.fromRGB(36, 36, 48)
@@ -65,7 +70,7 @@ local themes = {
 }
 
 ----------------------------------------------------------------
--- CONNECTION TRACKING (so Unload can clean up everything)
+-- CONNECTION TRACKING
 ----------------------------------------------------------------
 local conns = {}
 local function track(c)
@@ -83,7 +88,7 @@ local function onUnload(fn)
 end
 
 ----------------------------------------------------------------
--- SETTINGS (persisted to disk when the executor allows it)
+-- SETTINGS
 ----------------------------------------------------------------
 local settings = { toggles = {}, sliders = {}, binds = {}, opts = {}, accent = 1, menuKey = "RightShift" }
 local canFile = typeof(readfile) == "function" and typeof(writefile) == "function" and typeof(isfile) == "function"
@@ -98,14 +103,13 @@ if canFile then
 	if ok and type(data) == "table" then
 		if type(data.toggles) == "table" then settings.toggles = data.toggles end
 		if type(data.sliders) == "table" then settings.sliders = data.sliders end
-		if type(data.accent) == "number" then settings.accent = data.accent end
+		if type(data.accent)  == "number" then settings.accent  = data.accent  end
 		if type(data.menuKey) == "string" then settings.menuKey = data.menuKey end
-		if type(data.binds) == "table" then settings.binds = data.binds end
-		if type(data.opts) == "table" then settings.opts = data.opts end
+		if type(data.binds)   == "table" then settings.binds   = data.binds   end
+		if type(data.opts)    == "table" then settings.opts    = data.opts    end
 	end
 end
 
--- menu options (default-on settings live here, separate from feature toggles)
 local opts = settings.opts
 do
 	local defaults = { splash = true, openOnLoad = true, notifs = true, showButton = true }
@@ -120,9 +124,7 @@ local function saveSettings()
 	saveQueued = true
 	task.delay(0.5, function()
 		saveQueued = false
-		pcall(function()
-			writefile(kSaveFile, HttpService:JSONEncode(settings))
-		end)
+		pcall(function() writefile(kSaveFile, HttpService:JSONEncode(settings)) end)
 	end)
 end
 
@@ -133,10 +135,10 @@ do
 end
 
 ----------------------------------------------------------------
--- ACCENT THEME (live-recolors every bound element)
+-- ACCENT THEME
 ----------------------------------------------------------------
 local accent = (themes[settings.accent] or themes[1]).color
-local accentTargets = {}
+local accentTargets   = {}
 local accentCallbacks = {}
 
 local function bindAccent(inst, prop)
@@ -149,17 +151,13 @@ local function setAccent(idx)
 	if not t then return end
 	accent = t.color
 	settings.accent = idx
-	for _, e in ipairs(accentTargets) do
-		pcall(function() e[1][e[2]] = accent end)
-	end
-	for _, cb in ipairs(accentCallbacks) do
-		pcall(cb, accent)
-	end
+	for _, e in ipairs(accentTargets) do pcall(function() e[1][e[2]] = accent end) end
+	for _, cb in ipairs(accentCallbacks) do pcall(cb, accent) end
 	saveSettings()
 end
 
 ----------------------------------------------------------------
--- SMALL UI HELPERS
+-- UI HELPERS
 ----------------------------------------------------------------
 local function addCorner(inst, r)
 	local c = Instance.new("UICorner")
@@ -180,7 +178,6 @@ end
 local function getGuiParent()
 	local ok, hui = pcall(function() return gethui and gethui() end)
 	if ok and hui then return hui end
-
 	local ok2, coreGui = pcall(function() return game:GetService("CoreGui") end)
 	if ok2 and coreGui then
 		local okTest = pcall(function()
@@ -190,7 +187,6 @@ local function getGuiParent()
 		end)
 		if okTest then return coreGui end
 	end
-
 	return player:WaitForChild("PlayerGui")
 end
 
@@ -202,10 +198,8 @@ do
 	if oldChams then oldChams:Destroy() end
 end
 
--- generic drag helper: drag `handle` to move `target`; a short press without movement calls onTap
 local function makeDraggable(handle, target, onTap)
-	local dragging = false
-	local moved = false
+	local dragging, moved = false, false
 	local dragInput, dragStart, startPos
 
 	track(handle.InputBegan:Connect(function(input)
@@ -246,9 +240,9 @@ local function makeDraggable(handle, target, onTap)
 end
 
 ----------------------------------------------------------------
--- GHOST ICON (pixel art drawn with frames, so no image api is needed)
+-- GHOST ICON (pixel art, same data as original)
 ----------------------------------------------------------------
-local kGhostData = "e51,e51,e51,e51,e51,e51,e27k12e12,e24k4w10k3e10,e23k2w16k2e8,e21k2w19k3e6,e19k2w23k2e5,e18k2w25k3e3,e17k2w28k1e3,e16k2w29k2e2,e15k2w31k1e2,e15k1w32k2e1,e15k1w33k1e1,e14k2w9k5w3k1w3k1w2k5w4k1e1,e14k1w10k5w3k5w2k5w4k1e1,e14k1w18k1w3k1w11k1e1,e13k2w34k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k2w35k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k2w36k1e1,e11k1w37k1e1,e11k1w37k1e1,e10k2w36k2e1,e10k1w37k1e2,e9k2w37k1e2,e9k1w38k1e2,e8k1w38k2e2,e8k1w38k1e3,e7k1w39k1e3,e6k2w39k1e3,e6k1w39k1e4,e6k1w39k1e4,e5k1w40k1e4,e4k2w8k3w29k1e4,e4k1w8k2g1k1w28k1e5,e3k2w6k3g2k1w27k2e5,e3k1w5k3g4k1w27k1e6,e3k1w3k4g5k1w26k2e6,e3k4e3k2g3k1w27k1e7,e11k1g3k1w13k5w9k1e7,e11k1g3k1w12k2g2k2w8k2e7,e12k4w11k2g2k3w8k1e8,e15k1w10k1g3k2e2k1w6k2e8,e15k1w8k2g3k2e3k1w6k1e9,e15k2w4k4g3k2e4k1w5k2e9,e16k6e2k2g1k2e5k1w4k2e10,e25k2e7k2w2k2e11,e35k4e12,e51,e51,e51/e51,e51,e51,e51,e51,e27k11e13,e24k3w10k4e10,e22k3w15k3e8,e20k3w19k3e6,e19k2w23k2e5,e18k2w25k2e4,e17k2w27k2e3,e16k2w29k1e3,e15k2w30k2e2,e15k1w32k2e1,e15k1w33k1e1,e14k2w9k5w3k1w3k1w2k5w4k1e1,e14k1w10k5w3k5w2k5w4k1e1,e14k1w18k1w3k1w11k1e1,e14k1w34k1e1,e14k1w34k1e1,e14k1w34k1e1,e13k2w34k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k2w35k1e1,e12k1w36k1e1,e11k2w36k1e1,e11k1w37k1e1,e10k2w36k1e2,e10k1w37k1e2,e9k1w38k1e2,e8k2w38k1e2,e7k2w38k1e3,e6k2w39k1e3,e6k1w40k1e3,e5k1w40k2e3,e4k2w40k1e4,e3k2w5k2w34k1e4,e2k2w3k3e1k2w33k1e4,e2k1w2k3e4k2w31k2e4,e1k1w2k2e5k1g1k1w31k1e5,e1k1w1k2e6k1g1k1w30k2e5,e2k2e7k1g1k1w30k1e6,e11k1g1k1w12k5w12k2e6,e11k1g1k1w10k3g3k2w11k1e7,e11k3w9k2g6k2w10k1e7,e11k2w10k2g7k1w9k1e8,e12k1w9k1e1k1g6k2w8k2e8,e12k2w7k2e1k2g5k2w8k1e9,e13k2w4k3e3k1g4k1e1k1w7k2e9,e14k6e6k2g1k2e1k2w5k3e9,e27k3e3k1w4k2e11,e33k6e12,e51,e51,e51,e51/e51,e51,e51,e51,e27k11e13,e24k4w9k4e10,e22k3w15k3e8,e21k2w19k3e6,e20k2w22k2e5,e18k2w25k2e4,e17k2w27k2e3,e16k2w29k2e2,e16k1w31k1e2,e15k2w31k2e1,e15k1w33k1e1,e15k1w9k5w3k1w3k1w2k5w4k1e1,e15k1w9k5w3k5w2k5w4k1e1,e14k2w17k1w3k1w11k1e1,e14k1w34k1e1,e14k1w34k1e1,e14k1w34k1e1,e13k2w34k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k1w37k1e1,e11k1w37k1e1,e10k1w37k1e2,e9k2w37k1e2,e9k1w38k1e2,e8k2w38k1e2,e8k1w38k1e3,e7k1w39k1e3,e6k2w38k1e4,e6k1w39k1e4,e5k2w39k1e4,e4k2g1k4w34k1e5,e4k3g3k2w33k1e5,e3k3g2k2e1k1w33k1e5,e3k2g2k2e2k1w32k1e6,e2k2g2k2e3k1w32k1e6,e2k1g1k3e4k1w31k2e6,e2k3e6k1w13k6w12k1e7,e11k1w11k2e1k1g2k2w12k1e7,e10k1w11k2e2k1g3k1w11k2e7,e10k1w10k2e3k1g3k1w10k1e9,e10k1w9k2e4k1g3k1w9k2e9,e10k2w7k2e5k1g3k2w8k1e10,e11k2w4k2e7k1g3k2w7k2e10,e12k6e8k1g2k3w6k2e11,e27k3e1k2w3k3e12,e32k5e14,e51,e51,e51,e51,e51/e51,e51,e32k4e15,e26k6w3k5e11,e23k4w12k3e9,e21k3w17k2e8,e20k2w21k2e6,e18k2w24k2e5,e17k2w26k2e4,e17k1w28k2e3,e16k1w30k1e3,e15k2w30k2e2,e15k1w32k2e1,e15k1w33k1e1,e15k1w9k5w3k1w3k1w2k5w4k1e1,e15k1w9k5w3k5w2k5w4k1e1,e14k1w18k1w3k1w11k2,e14k1w35k1,e14k1w35k1,e13k2w35k1,e13k1w36k1,e13k1w36k1,e12k1w37k1,e12k1w36k2,e12k1w36k1e1,e11k1w37k1e1,e11k1w37k1e1,e10k1w38k1e1,e9k2w37k2e1,e9k1w38k1e2,e8k1w38k2e2,e7k2w38k1e3,e7k1w39k1e3,e6k2w38k2e3,e6k1w39k1e4,e5k2w39k1e4,e4k6w35k1e5,e4k1g4k1w35k1e5,e3k1g5k1w35k1e5,e3k1g4k2w34k1e6,e2k1g4k3w34k1e6,e2k1g2k3e1k1w15k3w16k1e6,e2k4e3k1w14k2e1k2w14k1e7,e9k1w13k2e3k1w14k1e7,e9k1w12k2e4k1w13k2e7,e9k1w10k3e5k1w12k1e9,e10k1w8k3e6k1w12k1e9,e10k2w4k3g1k2e6k1w10k2e10,e11k9e8k1w10k1e11,e28k2w8k1e12,e28k3w5k2e13,e30k7e14,e51,e51,e51,e51,e51,e51/e51,e51,e51,e27k13e11,e23k5w11k2e10,e22k2w17k2e8,e20k3w19k3e6,e19k2w23k2e5,e18k2w25k2e4,e17k2w27k2e3,e16k2w29k1e3,e16k1w31k1e2,e15k1w32k2e1,e15k1w9k5w3k1w3k1w2k5w4k1e1,e14k2w9k5w3k5w2k5w4k1e1,e14k1w18k1w3k1w11k2,e14k1w35k1,e14k1w35k1,e14k1w35k1,e13k1w36k1,e13k1w36k1,e13k1w36k1,e12k2w36k1,e12k1w37k1,e11k2w36k1e1,e11k1w37k1e1,e10k1w38k1e1,e10k1w37k2e1,e9k1w38k1e2,e8k2w37k2e2,e8k1w38k1e3,e7k1w38k1e4,e6k2w38k1e4,e6k1w39k1e4,e5k3w38k1e4,e5k1g1k1w37k1e5,e4k1g3k1w36k1e5,e3k2g4k1w35k1e5,e3k1g4k2w34k1e6,e3k1g3k2w35k1e6,e2k2g2k3w34k2e6,e2k6w16k4w15k1e7,e3k2e2k1w14k3e2k1w15k1e7,e7k1w12k3g1k1e2k1w15k1e7,e7k1w11k2g2k2e2k1w12k1w1k2e7,e7k2w8k2g4k1e3k1w11k1g1k2e8,e8k2w5k3g4k2e3k1w10k2g1k2e8,e9k7e2k1g2k2e4k1w10k1g2k1e9,e18k4e5k2w8k2g1k2e9,e28k2w6k2g1k2e10,e29k1w5k5e11,e30k9e12,e51,e51,e51,e51,e51,e51/e51,e51,e51,e29k8e14,e26k4w6k4e11,e24k3w12k3e9,e22k2w17k3e7,e20k2w21k2e6,e19k2w23k2e5,e17k2w26k2e4,e16k2w28k1e4,e16k1w29k2e3,e15k2w30k1e3,e15k1w31k2e2,e14k1w10k5w3k1w3k1w2k5w3k1e2,e14k1w10k5w3k5w2k5w3k2e1,e14k1w18k1w3k1w11k1e1,e14k1w34k1e1,e14k1w34k1e1,e13k1w35k1e1,e13k1w36k1,e13k1w36k1,e12k2w36k1,e12k1w36k2,e12k1w36k1e1,e11k1w37k1e1,e11k1w37k1e1,e10k1w38k1e1,e9k2w37k1e2,e9k1w37k2e2,e8k1w38k1e3,e7k2w37k2e3,e7k1w38k1e4,e6k1w39k1e4,e5k1w40k1e4,e5k2w39k1e4,e5k1g1k1w37k1e5,e4k2g1k1w37k1e5,e4k1g3k1w36k1e5,e3k1g4k1w36k1e5,e3k1g3k1w36k1e6,e2k2g2k2w14k3w19k1e6,e2k1g3k1w13k3g2k1w17k1e7,e2k5w11k3g5k1w16k1e7,e6k1w10k2g7k1w16k1e7,e5k2w8k4g6k2w11k3w2k1e7,e5k2w7k2e2k1g5k3w9k2g2k4e7,e6k2w3k3e4k1g4k2e1k1w9k1g4k2e8,e8k4e6k2g2k2e2k1w8k2g4k2e8,e19k3e4k1w7k3g4k1e9,e27k1w5k2e1k1g3k2e9,e27k2w2k3e2k1g2k2e10,e28k4e4k4e11,e51,e51,e51,e51,e51/e51,e51,e51,e51,e30k4e17,e27k4w2k6e12,e23k4w11k3e10,e21k3w16k2e9,e19k3w20k2e7,e18k2w23k2e6,e17k2w25k2e5,e16k2w27k2e4,e15k2w29k1e4,e15k1w30k2e3,e15k1w9k5w3k1w3k1w2k5w2k2e2,e14k1w10k5w3k5w2k5w3k1e2,e14k1w18k1w3k1w10k2e1,e14k1w34k1e1,e14k1w34k1e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k2,e13k1w36k1,e12k2w36k1,e12k1w36k2,e12k1w36k1e1,e11k2w36k1e1,e10k1w38k1e1,e10k1w37k2e1,e10k1w37k1e2,e9k1w37k2e2,e8k2w37k1e3,e8k1w38k1e3,e7k2w38k1e3,e6k1w39k1e4,e6k1w39k1e4,e6k1w39k1e4,e6k1w38k1e5,e5k2w38k1e5,e5k2w38k1e5,e4k3w37k1e6,e4k2w38k1e6,e4k2w15k4w19k1e6,e4k2w13k2g3k2w17k1e7,e4k1w12k3g5k1w17k1e7,e4k1w10k3e1k1g5k1w17k1e7,e4k2w7k3e3k1g5k1w10k4w2k1e8,e6k8e5k1g4k1w10k2g3k1w1k1e8,e19k1g4k1w10k2g3k1w1k1e8,e19k2g2k3w7k4g3k1w1k1e8,e20k4e1k1w6k2e2k1g3k1w1k1e8,e25k1w5k2e4k1g2k3e8,e25k6e6k2g1k2e9,e38k4e9,e51,e51,e51,e51/e51,e51,e51,e51,e51,e51,e51,e25k10e16,e23k3w8k5e12,e21k3w14k3e10,e19k3w18k2e9,e18k2w21k3e7,e17k2w24k2e6,e16k2w26k2e5,e16k1w28k2e4,e15k1w30k2e3,e14k2w9k5w3k1w3k1w2k5w2k1e3,e14k1w10k5w3k5w2k5w2k2e2,e14k1w18k1w3k1w10k1e2,e14k1w33k2e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k2w35k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k1w37k1e1,e10k2w36k2e1,e10k1w37k1e2,e9k1w38k1e2,e9k1w37k1e3,e8k1w38k1e3,e8k1w38k1e3,e7k1w39k1e3,e7k1w38k1e4,e6k1w39k1e4,e6k1w39k1e4,e5k1w40k1e4,e4k1w40k1e5,e4k1w40k1e5,e3k1w41k1e5,e3k1w15k5w20k1e6,e3k1w14k2e1k1g1k2w19k1e6,e3k1w11k3e3k1g2k1w18k1e7,e3k1w9k3e4k1g3k1w18k1e7,e4k2w5k3e6k1g2k2w18k1e7,e5k6e9k1g2k1w10k5w3k2e7,e20k1g2k1w10k1e1k1g1k2w2k1e8,e20k1g2k1w9k1e3k1g1k1w2k1e8,e20k1g2k1w8k2e3k3w2k1e8,e20k2g1k2w6k1e6k2w2k1e8,e21k4w4k2e8k1w1k2e8,e24k6e9k1w1k1e9,e39k3e9,e51,e51/e51,e51,e51,e51,e51,e51,e51,e51,e26k12e13,e23k4w10k3e11,e21k3w16k2e9,e19k3w19k3e7,e18k2w23k2e6,e17k2w25k2e5,e16k2w27k2e4,e15k2w29k1e4,e15k1w31k1e3,e14k2w31k2e2,e14k1w10k5w3k1w3k1w2k5w3k1e2,e14k1w10k5w3k5w2k5w3k1e2,e13k2w18k1w3k1w10k2e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k2w35k1e1,e12k1w36k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k1w37k1e1,e10k1w37k2e1,e10k1w37k1e2,e10k1w37k1e2,e9k1w37k1e3,e8k1w38k1e3,e8k1w38k1e3,e7k1w39k1e3,e7k1w38k1e4,e6k1w39k1e4,e6k1w39k1e4,e5k1w40k1e4,e4k1w40k1e5,e3k1w41k1e5,e3k1w13k5w23k1e5,e2k2w11k2e4k2w21k1e6,e2k1w10k3e6k1w21k1e6,e2k1w7k3g1k1e6k2w20k1e7,e2k3w2k4g2k2e6k1w21k1e7,e4k4e1k1g1k3e7k1w21k1e7,e9k3e8k1w11k5w5k2e7,e20k1w10k2e3k2w5k1e7,e20k1w9k2e5k1w4k1e8,e20k1w8k2e6k1w4k1e8,e20k2w6k2e7k2w3k1e8,e21k2w2k4e9k1w2k2e8,e22k3e13k1w2k1e9,e38k4e9,e39k2e10/e51,e51,e51,e51,e51,e51,e51,e27k11e13,e24k4w10k3e10,e21k3w16k3e8,e19k3w20k2e7,e18k2w23k2e6,e17k2w25k2e5,e16k2w27k2e4,e15k2w29k1e4,e14k2w30k2e3,e14k1w32k1e3,e13k2w32k2e2,e13k1w11k5w3k1w3k1w2k5w3k1e2,e13k1w11k5w3k5w2k5w3k1e2,e13k1w19k1w3k1w11k1e1,e12k1w36k1e1,e12k1w36k1e1,e12k1w36k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k1w36k2e1,e11k1w36k1e2,e10k1w37k1e2,e10k1w37k1e2,e9k1w38k1e2,e9k1w37k2e2,e8k1w38k1e3,e8k1w38k1e3,e7k1w39k1e3,e7k1w39k1e3,e6k1w39k1e4,e5k2w39k1e4,e4k2w40k1e4,e3k1w41k1e5,e2k1w42k1e5,e1k2w11k5w26k1e5,e1k1w11k2g3k2w24k1e6,e1k1w8k3g4k3w24k1e6,e1k1w6k3g6k1e1k1w24k1e6,e1k1w3k5g6k1e1k1w24k1e7,e1k5e3k1g5k1e2k1w24k1e7,e9k1g3k2e3k1w23k2e7,e10k4e3k2w14k4w5k1e8,e17k1w14k2e2k2w4k1e8,e17k1w12k2e5k1w4k1e8,e17k2w10k2e6k1w3k2e8,e18k2w7k3e7k1w3k1e9,e19k2w3k3g1k1e8k1w3k1e9,e20k9e8k1w2k2e9,e37k4e10,e38k2e11,e51"
+local kGhostData = "e51,e51,e51,e51,e51,e51,e27k12e12,e24k4w10k3e10,e23k2w16k2e8,e21k2w19k3e6,e19k2w23k2e5,e18k2w25k3e3,e17k2w28k1e3,e16k2w29k2e2,e15k2w31k1e2,e15k1w32k2e1,e15k1w33k1e1,e14k2w9k5w3k1w3k1w2k5w4k1e1,e14k1w10k5w3k5w2k5w4k1e1,e14k1w18k1w3k1w11k1e1,e13k2w34k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k2w35k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k2w36k1e1,e11k1w37k1e1,e11k1w37k1e1,e10k2w36k2e1,e10k1w37k1e2,e9k2w37k1e2,e9k1w38k1e2,e8k1w38k2e2,e8k1w38k1e3,e7k1w39k1e3,e6k2w39k1e3,e6k1w39k1e4,e6k1w39k1e4,e5k1w40k1e4,e4k2w8k3w29k1e4,e4k1w8k2g1k1w28k1e5,e3k2w6k3g2k1w27k2e5,e3k1w5k3g4k1w27k1e6,e3k1w3k4g5k1w26k2e6,e3k4e3k2g3k1w27k1e7,e11k1g3k1w13k5w9k1e7,e11k1g3k1w12k2g2k2w8k2e7,e12k4w11k2g2k3w8k1e8,e15k1w10k1g3k2e2k1w6k2e8,e15k1w8k2g3k2e3k1w6k1e9,e15k2w4k4g3k2e4k1w5k2e9,e16k6e2k2g1k2e5k1w4k2e10,e25k2e7k2w2k2e11,e35k4e12,e51,e51,e51/e51,e51,e51,e51,e51,e27k11e13,e24k3w10k4e10,e22k3w15k3e8,e20k3w19k3e6,e19k2w23k2e5,e18k2w25k2e4,e17k2w27k2e3,e16k2w29k1e3,e15k2w30k2e2,e15k1w32k2e1,e15k1w33k1e1,e14k2w9k5w3k1w3k1w2k5w4k1e1,e14k1w10k5w3k5w2k5w4k1e1,e14k1w18k1w3k1w11k1e1,e14k1w34k1e1,e14k1w34k1e1,e14k1w34k1e1,e13k2w34k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k2w35k1e1,e12k1w36k1e1,e11k2w36k1e1,e11k1w37k1e1,e10k2w36k1e2,e10k1w37k1e2,e9k1w38k1e2,e8k2w38k1e2,e7k2w38k1e3,e6k2w39k1e3,e6k1w40k1e3,e5k1w40k2e3,e4k2w40k1e4,e3k2w5k2w34k1e4,e2k2w3k3e1k2w33k1e4,e2k1w2k3e4k2w31k2e4,e1k1w2k2e5k1g1k1w31k1e5,e1k1w1k2e6k1g1k1w30k2e5,e2k2e7k1g1k1w30k1e6,e11k1g1k1w12k5w12k2e6,e11k1g1k1w10k3g3k2w11k1e7,e11k3w9k2g6k2w10k1e7,e11k2w10k2g7k1w9k1e8,e12k1w9k1e1k1g6k2w8k2e8,e12k2w7k2e1k2g5k2w8k1e9,e13k2w4k3e3k1g4k1e1k1w7k2e9,e14k6e6k2g1k2e1k2w5k3e9,e27k3e3k1w4k2e11,e33k6e12,e51,e51,e51,e51/e51,e51,e51,e51,e27k11e13,e24k4w9k4e10,e22k3w15k3e8,e21k2w19k3e6,e20k2w22k2e5,e18k2w25k2e4,e17k2w27k2e3,e16k2w29k2e2,e16k1w31k1e2,e15k2w31k2e1,e15k1w33k1e1,e15k1w9k5w3k1w3k1w2k5w4k1e1,e15k1w9k5w3k5w2k5w4k1e1,e14k2w17k1w3k1w11k1e1,e14k1w34k1e1,e14k1w34k1e1,e14k1w34k1e1,e13k2w34k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k1w37k1e1,e11k1w37k1e1,e10k1w37k1e2,e9k2w37k1e2,e9k1w38k1e2,e8k2w38k1e2,e8k1w38k1e3,e7k1w39k1e3,e6k2w38k1e4,e6k1w39k1e4,e5k2w39k1e4,e4k2g1k4w34k1e5,e4k3g3k2w33k1e5,e3k3g2k2e1k1w33k1e5,e3k2g2k2e2k1w32k1e6,e2k2g2k2e3k1w32k1e6,e2k1g1k3e4k1w31k2e6,e2k3e6k1w13k6w12k1e7,e11k1w11k2e1k1g2k2w12k1e7,e10k1w11k2e2k1g3k1w11k2e7,e10k1w10k2e3k1g3k1w10k1e9,e10k1w9k2e4k1g3k1w9k2e9,e10k2w7k2e5k1g3k2w8k1e10,e11k2w4k2e7k1g3k2w7k2e10,e12k6e8k1g2k3w6k2e11,e27k3e1k2w3k3e12,e32k5e14,e51,e51,e51,e51,e51/e51,e51,e32k4e15,e26k6w3k5e11,e23k4w12k3e9,e21k3w17k2e8,e20k2w21k2e6,e18k2w24k2e5,e17k2w26k2e4,e17k1w28k2e3,e16k1w30k1e3,e15k2w30k2e2,e15k1w32k2e1,e15k1w33k1e1,e15k1w9k5w3k1w3k1w2k5w4k1e1,e15k1w9k5w3k5w2k5w4k1e1,e14k1w18k1w3k1w11k2,e14k1w35k1,e14k1w35k1,e13k2w35k1,e13k1w36k1,e13k1w36k1,e12k1w37k1,e12k1w36k2,e12k1w36k1e1,e11k1w37k1e1,e11k1w37k1e1,e10k1w38k1e1,e9k2w37k2e1,e9k1w38k1e2,e8k1w38k2e2,e7k2w38k1e3,e7k1w39k1e3,e6k2w38k2e3,e6k1w39k1e4,e5k2w39k1e4,e4k6w35k1e5,e4k1g4k1w35k1e5,e3k1g5k1w35k1e5,e3k1g4k2w34k1e6,e2k1g4k3w34k1e6,e2k1g2k3e1k1w15k3w16k1e6,e2k4e3k1w14k2e1k2w14k1e7,e9k1w13k2e3k1w14k1e7,e9k1w12k2e4k1w13k2e7,e9k1w10k3e5k1w12k1e9,e10k1w8k3e6k1w12k1e9,e10k2w4k3g1k2e6k1w10k2e10,e11k9e8k1w10k1e11,e28k2w8k1e12,e28k3w5k2e13,e30k7e14,e51,e51,e51,e51,e51,e51/e51,e51,e51,e27k13e11,e23k5w11k2e10,e22k2w17k2e8,e20k3w19k3e6,e19k2w23k2e5,e18k2w25k2e4,e17k2w27k2e3,e16k2w29k1e3,e16k1w31k1e2,e15k1w32k2e1,e15k1w9k5w3k1w3k1w2k5w4k1e1,e14k2w9k5w3k5w2k5w4k1e1,e14k1w18k1w3k1w11k2,e14k1w35k1,e14k1w35k1,e14k1w35k1,e13k1w36k1,e13k1w36k1,e13k1w36k1,e12k2w36k1,e12k1w37k1,e11k2w36k1e1,e11k1w37k1e1,e10k1w38k1e1,e10k1w37k2e1,e9k1w38k1e2,e8k2w37k2e2,e8k1w38k1e3,e7k1w38k1e4,e6k2w38k1e4,e6k1w39k1e4,e5k3w38k1e4,e5k1g1k1w37k1e5,e4k1g3k1w36k1e5,e3k2g4k1w35k1e5,e3k1g4k2w34k1e6,e3k1g3k2w35k1e6,e2k2g2k3w34k2e6,e2k6w16k4w15k1e7,e3k2e2k1w14k3e2k1w15k1e7,e7k1w12k3g1k1e2k1w15k1e7,e7k1w11k2g2k2e2k1w12k1w1k2e7,e7k2w8k2g4k1e3k1w11k1g1k2e8,e8k2w5k3g4k2e3k1w10k2g1k2e8,e9k7e2k1g2k2e4k1w10k1g2k1e9,e18k4e5k2w8k2g1k2e9,e28k2w6k2g1k2e10,e29k1w5k5e11,e30k9e12,e51,e51,e51,e51,e51,e51/e51,e51,e51,e29k8e14,e26k4w6k4e11,e24k3w12k3e9,e22k2w17k3e7,e20k2w21k2e6,e19k2w23k2e5,e17k2w26k2e4,e16k2w28k1e4,e16k1w29k2e3,e15k2w30k1e3,e15k1w31k2e2,e14k1w10k5w3k1w3k1w2k5w3k1e2,e14k1w10k5w3k5w2k5w3k2e1,e14k1w18k1w3k1w11k1e1,e14k1w34k1e1,e14k1w34k1e1,e13k1w35k1e1,e13k1w36k1,e13k1w36k1,e12k2w36k1,e12k1w36k2,e12k1w36k1e1,e11k1w37k1e1,e11k1w37k1e1,e10k1w38k1e1,e9k2w37k1e2,e9k1w37k2e2,e8k1w38k1e3,e7k2w37k2e3,e7k1w38k1e4,e6k1w39k1e4,e5k1w40k1e4,e5k2w39k1e4,e5k1g1k1w37k1e5,e4k2g1k1w37k1e5,e4k1g3k1w36k1e5,e3k1g4k1w36k1e5,e3k1g3k1w36k1e6,e2k2g2k2w14k3w19k1e6,e2k1g3k1w13k3g2k1w17k1e7,e2k5w11k3g5k1w16k1e7,e6k1w10k2g7k1w16k1e7,e5k2w8k4g6k2w11k3w2k1e7,e5k2w7k2e2k1g5k3w9k2g2k4e7,e6k2w3k3e4k1g4k2e1k1w9k1g4k2e8,e8k4e6k2g2k2e2k1w8k2g4k2e8,e19k3e4k1w7k3g4k1e9,e27k1w5k2e1k1g3k2e9,e27k2w2k3e2k1g2k2e10,e28k4e4k4e11,e51,e51,e51,e51,e51/e51,e51,e51,e51,e30k4e17,e27k4w2k6e12,e23k4w11k3e10,e21k3w16k2e9,e19k3w20k2e7,e18k2w23k2e6,e17k2w25k2e5,e16k2w27k2e4,e15k2w29k1e4,e15k1w30k2e3,e15k1w9k5w3k1w3k1w2k5w2k2e2,e14k1w10k5w3k5w2k5w3k1e2,e14k1w18k1w3k1w10k2e1,e14k1w34k1e1,e14k1w34k1e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k2,e13k1w36k1,e12k2w36k1,e12k1w36k2,e12k1w36k1e1,e11k2w36k1e1,e10k1w38k1e1,e10k1w37k2e1,e10k1w37k1e2,e9k1w37k2e2,e8k2w37k1e3,e8k1w38k1e3,e7k2w38k1e3,e6k1w39k1e4,e6k1w39k1e4,e6k1w39k1e4,e6k1w38k1e5,e5k2w38k1e5,e5k2w38k1e5,e4k3w37k1e6,e4k2w38k1e6,e4k2w15k4w19k1e6,e4k2w13k2g3k2w17k1e7,e4k1w12k3g5k1w17k1e7,e4k1w10k3e1k1g5k1w17k1e7,e4k2w7k3e3k1g5k1w10k4w2k1e8,e6k8e5k1g4k1w10k2g3k1w1k1e8,e19k1g4k1w10k2g3k1w1k1e8,e19k2g2k3w7k4g3k1w1k1e8,e20k4e1k1w6k2e2k1g3k1w1k1e8,e25k1w5k2e4k1g2k3e8,e25k6e6k2g1k2e9,e38k4e9,e51,e51,e51,e51/e51,e51,e51,e51,e51,e51,e51,e25k10e16,e23k3w8k5e12,e21k3w14k3e10,e19k3w18k2e9,e18k2w21k3e7,e17k2w24k2e6,e16k2w26k2e5,e16k1w28k2e4,e15k1w30k2e3,e14k2w9k5w3k1w3k1w2k5w2k1e3,e14k1w10k5w3k5w2k5w2k2e2,e14k1w18k1w3k1w10k1e2,e14k1w33k2e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k2w35k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k1w37k1e1,e10k2w36k2e1,e10k1w37k1e2,e9k1w38k1e2,e9k1w37k1e3,e8k1w38k1e3,e8k1w38k1e3,e7k1w39k1e3,e7k1w38k1e4,e6k1w39k1e4,e6k1w39k1e4,e5k1w40k1e4,e4k1w40k1e5,e4k1w40k1e5,e3k1w41k1e5,e3k1w15k5w20k1e6,e3k1w14k2e1k1g1k2w19k1e6,e3k1w11k3e3k1g2k1w18k1e7,e3k1w9k3e4k1g3k1w18k1e7,e4k2w5k3e6k1g2k2w18k1e7,e5k6e9k1g2k1w10k5w3k2e7,e20k1g2k1w10k1e1k1g1k2w2k1e8,e20k1g2k1w9k1e3k1g1k1w2k1e8,e20k1g2k1w8k2e3k3w2k1e8,e20k2g1k2w6k1e6k2w2k1e8,e21k4w4k2e8k1w1k2e8,e24k6e9k1w1k1e9,e39k3e9,e51,e51/e51,e51,e51,e51,e51,e51,e51,e51,e26k12e13,e23k4w10k3e11,e21k3w16k2e9,e19k3w19k3e7,e18k2w23k2e6,e17k2w25k2e5,e16k2w27k2e4,e15k2w29k1e4,e15k1w31k1e3,e14k2w31k2e2,e14k1w10k5w3k1w3k1w2k5w3k1e2,e14k1w10k5w3k5w2k5w3k1e2,e13k2w18k1w3k1w10k2e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e13k1w35k1e1,e12k2w35k1e1,e12k1w36k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k1w37k1e1,e10k1w37k2e1,e10k1w37k1e2,e10k1w37k1e2,e9k1w37k1e3,e8k1w38k1e3,e8k1w38k1e3,e7k1w39k1e3,e7k1w39k1e3,e6k1w39k1e4,e6k1w39k1e4,e5k1w40k1e4,e4k1w40k1e5,e3k1w41k1e5,e3k1w13k5w23k1e5,e2k2w11k2e4k2w21k1e6,e2k1w10k3e6k1w21k1e6,e2k1w7k3g1k1e6k2w20k1e7,e2k3w2k4g2k2e6k1w21k1e7,e4k4e1k1g1k3e7k1w21k1e7,e9k3e8k1w11k5w5k2e7,e20k1w10k2e3k2w5k1e7,e20k1w9k2e5k1w4k1e8,e20k1w8k2e6k1w4k1e8,e20k2w6k2e7k2w3k1e8,e21k2w2k4e9k1w2k2e8,e22k3e13k1w2k1e9,e38k4e9,e39k2e10/e51,e51,e51,e51,e51,e51,e51,e27k11e13,e24k4w10k3e10,e21k3w16k3e8,e19k3w20k2e7,e18k2w23k2e6,e17k2w25k2e5,e16k2w27k2e4,e15k2w29k1e4,e14k2w30k2e3,e14k1w32k1e3,e13k2w32k2e2,e13k1w11k5w3k1w3k1w2k5w3k1e2,e13k1w11k5w3k5w2k5w3k1e2,e13k1w19k1w3k1w11k1e1,e12k1w36k1e1,e12k1w36k1e1,e12k1w36k1e1,e12k1w36k1e1,e12k1w36k1e1,e11k1w36k2e1,e11k1w36k1e2,e10k1w37k1e2,e10k1w37k1e2,e9k1w38k1e2,e9k1w37k2e2,e8k1w38k1e3,e8k1w38k1e3,e7k1w39k1e3,e7k1w39k1e3,e6k1w39k1e4,e5k2w39k1e4,e4k2w40k1e4,e3k1w41k1e5,e2k1w42k1e5,e1k2w11k5w26k1e5,e1k1w11k2g3k2w24k1e6,e1k1w8k3g4k3w24k1e6,e1k1w6k3g6k1e1k1w24k1e6,e1k1w3k5g6k1e1k1w24k1e7,e1k5e3k1g5k1e2k1w24k1e7,e9k1g3k2e3k1w23k2e7,e10k4e3k2w14k4w5k1e8,e17k1w14k2e2k2w4k1e8,e17k1w12k2e5k1w4k1e8,e17k2w10k2e6k1w3k2e8,e18k2w7k3e7k1w3k1e9,e19k2w3k3g1k1e8k1w3k1e9,e20k9e8k1w2k2e9,e37k4e10,e38k2e11,e51"
 local kGhostW, kGhostH = 51, 58
 local ghostPalette = {
 	k = Color3.fromRGB(10, 10, 14),
@@ -256,7 +250,6 @@ local ghostPalette = {
 	g = Color3.fromRGB(157, 157, 157),
 }
 
--- frames split by "/", rows by ",", each row is run-length pairs like k12w30e9 (e = empty)
 local ghostFrames = {}
 for frameStr in string.gmatch(kGhostData, "[^/]+") do
 	local runs = {}
@@ -273,7 +266,6 @@ for frameStr in string.gmatch(kGhostData, "[^/]+") do
 	ghostFrames[#ghostFrames + 1] = runs
 end
 
--- px = screen pixels per ghost pixel (whole numbers keep the edges crisp)
 local function createGhost(parent, px)
 	local root = Instance.new("Frame")
 	root.Name = "Ghost"
@@ -307,7 +299,6 @@ local function createGhost(parent, px)
 		for j = #runs + 1, #pool do pool[j].Visible = false end
 	end
 
-	-- plays the animation `cycles` times and blocks, so call it from task.spawn
 	function ghost:play(cycles, fps)
 		for _ = 1, cycles do
 			for i = 1, #ghostFrames do
@@ -338,7 +329,7 @@ mainFrame.Name = "Main"
 mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 mainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
 mainFrame.Size = UDim2.new(0, 0, 0, 0)
-mainFrame.BackgroundColor3 = Color3.new(1, 1, 1) -- gradient below supplies the real color
+mainFrame.BackgroundColor3 = Color3.new(1, 1, 1)
 mainFrame.BorderSizePixel = 0
 mainFrame.ClipsDescendants = true
 mainFrame.Visible = false
@@ -352,7 +343,6 @@ menuScale.Parent = mainFrame
 do
 	local stroke = addStroke(mainFrame, accent, 1.5, 0.2)
 	bindAccent(stroke, "Color")
-
 	local gradient = Instance.new("UIGradient")
 	gradient.Color = ColorSequence.new({
 		ColorSequenceKeypoint.new(0, Color3.fromRGB(28, 28, 38)),
@@ -363,7 +353,7 @@ do
 end
 
 ----------------------------------------------------------------
--- TOAST NOTIFICATIONS
+-- TOAST
 ----------------------------------------------------------------
 local toast = Instance.new("TextLabel")
 toast.Name = "Toast"
@@ -433,7 +423,6 @@ creditLabel.TextXAlignment = Enum.TextXAlignment.Left
 creditLabel.TextTransparency = 1
 creditLabel.Parent = titleBar
 
--- live "N active" badge
 local activeBadge = Instance.new("Frame")
 activeBadge.Name = "ActiveBadge"
 activeBadge.AnchorPoint = Vector2.new(1, 0)
@@ -530,9 +519,7 @@ local currentTab = "Move"
 
 local function selectTab(name)
 	currentTab = name
-	for pname, page in pairs(pages) do
-		page.Visible = (pname == name)
-	end
+	for pname, page in pairs(pages) do page.Visible = (pname == name) end
 	for bname, btn in pairs(tabButtons) do
 		local active = (bname == name)
 		TweenService:Create(btn, TweenInfo.new(0.15), {
@@ -588,17 +575,17 @@ for i, name in ipairs(tabNames) do
 end
 selectTab("Move")
 
-local movePage = pages.Move
+local movePage    = pages.Move
 local visualsPage = pages.Visuals
-local miscPage = pages.Misc
-local configPage = pages.Config
+local miscPage    = pages.Misc
+local configPage  = pages.Config
 local playersPage = pages.Players
 
 ----------------------------------------------------------------
 -- ROW BUILDERS
 ----------------------------------------------------------------
-local toggleSetters = {} -- every toggle's setState, used by Reset all / Unload
-local sliderResets = {}
+local toggleSetters = {}
+local sliderResets  = {}
 
 local function makeSection(text, order, parent)
 	local lbl = Instance.new("TextLabel")
@@ -614,25 +601,19 @@ local function makeSection(text, order, parent)
 	return lbl
 end
 
-local featureToggles = {} -- key -> { tag, set, get }: lets any toggle be bound to a key
-local bindingFeature = nil -- key of the toggle currently waiting for a key press
-local rebinding = false -- menu key rebind in progress (Config tab)
+local featureToggles = {}
+local bindingFeature = nil
+local rebinding      = false
 
 local function refreshBindTag(key)
 	local e = featureToggles[key]
 	if not e then return end
 	local bound = settings.binds[key]
-	if bindingFeature == key then
-		e.tag.Text = "press key"
-	else
-		e.tag.Text = bound and ("[" .. bound .. "]") or ""
-	end
+	e.tag.Text = (bindingFeature == key) and "press key" or (bound and ("[" .. bound .. "]") or "")
 end
 
--- o = { name, desc, key, opt, color, order, parent, callback }
--- key = saved + bindable toggle, opt = saved menu option (not counted as "active", not reset)
 local function makeToggleRow(o)
-	local hasDesc = o.desc ~= nil
+	local hasDesc  = o.desc ~= nil
 	local iconColor = o.color or accent
 
 	local row = Instance.new("Frame")
@@ -747,23 +728,16 @@ local function makeToggleRow(o)
 		end
 
 		local ok, err = pcall(o.callback, on)
-		if not ok then
-			warn("[Ghosted Menu] " .. o.name .. ": " .. tostring(err))
-		end
-		if not silent then
-			notify(o.name .. (on and " on" or " off"))
-		end
+		if not ok then warn("[Ghosted Menu] " .. o.name .. ": " .. tostring(err)) end
+		if not silent then notify(o.name .. (on and " on" or " off")) end
 	end
 
 	accentCallbacks[#accentCallbacks + 1] = function(c)
 		if state then switchBg.BackgroundColor3 = c end
 	end
 
-	track(clickBtn.MouseButton1Click:Connect(function()
-		setState(not state)
-	end))
+	track(clickBtn.MouseButton1Click:Connect(function() setState(not state) end))
 
-	-- right-click (PC): bind this toggle to a key
 	if o.key and not o.opt then
 		featureToggles[o.key] = { tag = bindTag, set = setState, get = function() return state end }
 		refreshBindTag(o.key)
@@ -776,11 +750,8 @@ local function makeToggleRow(o)
 		end))
 	end
 
-	if not o.opt then
-		toggleSetters[#toggleSetters + 1] = setState
-	end
+	if not o.opt then toggleSetters[#toggleSetters + 1] = setState end
 
-	-- restore saved state without a toast
 	if o.opt then
 		if opts[o.opt] then setState(true, true) end
 	elseif o.key and settings.toggles[o.key] == true then
@@ -790,7 +761,6 @@ local function makeToggleRow(o)
 	return row, setState
 end
 
--- o = { name, key, min, max, default, order, parent, callback }
 local function makeSliderRow(o)
 	local min, max = o.min, o.max
 	local value = o.default
@@ -876,7 +846,6 @@ local function makeSliderRow(o)
 	return row, setValue
 end
 
--- o = { text, color, order, parent, callback }
 local function makeButtonRow(o)
 	local base = o.color or kRowBg
 	local btn = Instance.new("TextButton")
@@ -897,9 +866,7 @@ local function makeButtonRow(o)
 	track(btn.MouseLeave:Connect(function()
 		TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = base }):Play()
 	end))
-	track(btn.MouseButton1Click:Connect(function()
-		o.callback(btn)
-	end))
+	track(btn.MouseButton1Click:Connect(function() o.callback(btn) end))
 	return btn
 end
 
@@ -918,13 +885,11 @@ end
 local function openMenu()
 	mainFrame.Visible = true
 	isOpen = true
-
 	TweenService:Create(mainFrame, TweenInfo.new(kTweenTime, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 		Size = getMenuSize(),
 	}):Play()
 	TweenService:Create(titleLabel, TweenInfo.new(kTweenTime), { TextTransparency = 0 }):Play()
 	TweenService:Create(creditLabel, TweenInfo.new(kTweenTime), { TextTransparency = 0 }):Play()
-
 	task.delay(kTweenTime * 0.5, function()
 		TweenService:Create(underline, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {
 			Size = UDim2.new(0, 150, 0, 3),
@@ -934,14 +899,12 @@ end
 
 local function closeMenu()
 	isOpen = false
-
 	TweenService:Create(mainFrame, TweenInfo.new(kTweenTime, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
 		Size = UDim2.new(0, 0, 0, 0),
 	}):Play()
 	TweenService:Create(titleLabel, TweenInfo.new(0.15), { TextTransparency = 1 }):Play()
 	TweenService:Create(creditLabel, TweenInfo.new(0.15), { TextTransparency = 1 }):Play()
 	TweenService:Create(underline, TweenInfo.new(0.15), { Size = UDim2.new(0, 0, 0, 3) }):Play()
-
 	task.delay(kTweenTime, function()
 		if not isOpen then mainFrame.Visible = false end
 	end)
@@ -953,7 +916,6 @@ end
 
 track(closeBtn.MouseButton1Click:Connect(closeMenu))
 
--- floating ghost button: tap to toggle, drag to reposition (the only way to open on mobile)
 local toggleBtn = Instance.new("TextButton")
 toggleBtn.Name = "ToggleButton"
 toggleBtn.Size = UDim2.new(0, kToggleBtnSize, 0, kToggleBtnSize)
@@ -979,7 +941,6 @@ do
 		Position = UDim2.new(0.5, gx, 0.5, gy + 2),
 	}):Play()
 
-	-- one animation cycle whenever the mouse hovers the ghost
 	local playing = false
 	track(toggleBtn.MouseEnter:Connect(function()
 		if playing then return end
@@ -993,7 +954,7 @@ end
 makeDraggable(toggleBtn, toggleBtn, toggleMenu)
 
 ----------------------------------------------------------------
--- FOOTER: DISCORD BUTTON (copies the invite link)
+-- FOOTER: DISCORD
 ----------------------------------------------------------------
 do
 	local blurple = Color3.fromRGB(88, 101, 242)
@@ -1023,25 +984,16 @@ do
 	track(btn.MouseButton1Click:Connect(function()
 		if busy then return end
 		busy = true
-
 		local copied = pcall(function()
-			if setclipboard then
-				setclipboard(kDiscordLink)
-			elseif toclipboard then
-				toclipboard(kDiscordLink)
-			else
-				error("no clipboard api")
-			end
+			if setclipboard then setclipboard(kDiscordLink)
+			elseif toclipboard then toclipboard(kDiscordLink)
+			else error("no clipboard api") end
 		end)
-
 		btn.Text = copied and "Copied link!" or "Copy failed - see console"
 		TweenService:Create(btn, TweenInfo.new(0.12), {
 			BackgroundColor3 = copied and Color3.fromRGB(90, 200, 120) or Color3.fromRGB(220, 80, 80),
 		}):Play()
-		if not copied then
-			warn("[Ghosted Menu] No clipboard API on this executor. Discord: " .. kDiscordLink)
-		end
-
+		if not copied then warn("[Ghosted Menu] No clipboard API. Discord: " .. kDiscordLink) end
 		task.delay(1.6, function()
 			btn.Text = "Join Discord"
 			TweenService:Create(btn, TweenInfo.new(0.2), { BackgroundColor3 = blurple }):Play()
@@ -1062,16 +1014,68 @@ local origGravity = workspace.Gravity
 local origFov = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or 70
 
 ----------------------------------------------------------------
+-- FLING HELPER (shared between Players tab buttons)
+----------------------------------------------------------------
+local flingPower = kDefaultFlingPower
+
+-- Tries LinearVelocity first (engine ≥ 604), falls back to BodyVelocity
+local function flingPlayer(plr)
+	local tChar = plr.Character
+	local tHrp  = tChar and tChar:FindFirstChild("HumanoidRootPart")
+	if not tHrp then notify("No character to fling") return end
+
+	-- direction: away from our hrp, biased upward
+	local myHrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local dir
+	if myHrp then
+		local d = (tHrp.Position - myHrp.Position)
+		dir = (d.Magnitude > 0.1 and d.Unit or Vector3.new(0, 1, 0)) + Vector3.new(0, 0.4, 0)
+		dir = dir.Unit
+	else
+		dir = Vector3.new(0, 1, 0)
+	end
+
+	-- try LinearVelocity (newer API, cleaner)
+	local usedNew = pcall(function()
+		local att = Instance.new("Attachment")
+		att.Parent = tHrp
+
+		local lv = Instance.new("LinearVelocity")
+		lv.Name         = "GhostedFling"
+		lv.Attachment0  = att
+		lv.VectorVelocity = dir * flingPower
+		lv.MaxForce    = math.huge
+		lv.Parent      = tHrp
+
+		task.delay(0.12, function()
+			pcall(function() lv:Destroy() end)
+			pcall(function() att:Destroy() end)
+		end)
+	end)
+
+	if not usedNew then
+		-- legacy BodyVelocity fallback
+		local bv = Instance.new("BodyVelocity")
+		bv.Name      = "GhostedFlingBV"
+		bv.MaxForce  = Vector3.new(1e9, 1e9, 1e9)
+		bv.Velocity  = dir * flingPower
+		bv.Parent    = tHrp
+		task.delay(0.12, function() pcall(function() bv:Destroy() end) end)
+	end
+
+	notify("Flung " .. plr.DisplayName)
+end
+
+----------------------------------------------------------------
 -- MOVE TAB
 ----------------------------------------------------------------
 makeSection("FLIGHT", 0, movePage)
 
--- FLY: survives respawn (re-attaches every frame) and works with keyboard, thumbstick and gamepad
 do
 	local flySpeed = kDefaultFlySpeed
 	local flyConn
 	local flyVertical = 0
-	local controls -- PlayerModule controls, fetched lazily; false = unavailable
+	local controls
 
 	local flyVertFrame = Instance.new("Frame")
 	flyVertFrame.Name = "FlyVertical"
@@ -1096,7 +1100,6 @@ do
 		addCorner(b, -1)
 		local s = addStroke(b, accent, 1.5, 0.3)
 		bindAccent(s, "Color")
-
 		track(b.InputBegan:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 				flyVertical = delta
@@ -1113,7 +1116,6 @@ do
 	makeVertButton("UP", 0, 1)
 	makeVertButton("DN", 64, -1)
 
-	-- camera-relative direction from the same controls the game uses (keyboard/thumbstick/gamepad)
 	local function getFlyDirection(hum, cam)
 		if controls == nil then
 			controls = false
@@ -1132,10 +1134,19 @@ do
 		return hum.MoveDirection
 	end
 
+	-- Clean up fly physics objects on the current character
 	local function cleanupFlyObjects()
 		local char = player.Character
-		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 		if hrp then
+			-- new API
+			local att = hrp:FindFirstChild("GhostedFlyAtt")
+			if att then att:Destroy() end
+			local lv = hrp:FindFirstChild("GhostedFlyLV")
+			if lv then lv:Destroy() end
+			local ao = hrp:FindFirstChild("GhostedFlyAO")
+			if ao then ao:Destroy() end
+			-- legacy
 			local bv = hrp:FindFirstChild("GhostedFlyBV")
 			if bv then bv:Destroy() end
 			local bg = hrp:FindFirstChild("GhostedFlyBG")
@@ -1146,6 +1157,7 @@ do
 	end
 
 	local function setFly(on)
+		-- disconnect first, then decide
 		disconnect(flyConn)
 		flyConn = nil
 		flyVertical = 0
@@ -1158,40 +1170,76 @@ do
 
 		flyConn = RunService.RenderStepped:Connect(function()
 			local char = player.Character
-			local hrp = char and char:FindFirstChild("HumanoidRootPart")
-			local hum = char and char:FindFirstChildOfClass("Humanoid")
-			local cam = workspace.CurrentCamera
+			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+			local hum  = char and char:FindFirstChildOfClass("Humanoid")
+			local cam  = workspace.CurrentCamera
 			if not (hrp and hum and cam) or hum.Health <= 0 then return end
 
-			local bv = hrp:FindFirstChild("GhostedFlyBV")
-			if not bv then
-				bv = Instance.new("BodyVelocity")
-				bv.Name = "GhostedFlyBV"
-				bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-				bv.Velocity = Vector3.zero
-				bv.Parent = hrp
-			end
-			local bg = hrp:FindFirstChild("GhostedFlyBG")
-			if not bg then
-				bg = Instance.new("BodyGyro")
-				bg.Name = "GhostedFlyBG"
-				bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
-				bg.P = 9e4
-				bg.D = 1e3
-				bg.Parent = hrp
-			end
 			hum.PlatformStand = true
 
 			local vertical = flyVertical
 			if not UserInputService:GetFocusedTextBox() then
-				if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vertical = 1 end
+				if UserInputService:IsKeyDown(Enum.KeyCode.Space)       then vertical =  1 end
 				if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then vertical = -1 end
 			end
 
 			local move = getFlyDirection(hum, cam) + Vector3.new(0, vertical, 0)
 			if move.Magnitude > 1 then move = move.Unit end
-			bv.Velocity = move * flySpeed
-			bg.CFrame = cam.CFrame
+			local vel = move * flySpeed
+
+			-- Try LinearVelocity (engine ≥ 604)
+			local ok = pcall(function()
+				local att = hrp:FindFirstChild("GhostedFlyAtt")
+				if not att then
+					att = Instance.new("Attachment")
+					att.Name = "GhostedFlyAtt"
+					att.Parent = hrp
+				end
+				local lv = hrp:FindFirstChild("GhostedFlyLV")
+				if not lv then
+					lv = Instance.new("LinearVelocity")
+					lv.Name        = "GhostedFlyLV"
+					lv.Attachment0 = att
+					lv.MaxForce   = math.huge
+					lv.Parent     = hrp
+				end
+				lv.VectorVelocity = vel
+
+				local ao = hrp:FindFirstChild("GhostedFlyAO")
+				if not ao then
+					ao = Instance.new("AlignOrientation")
+					ao.Name        = "GhostedFlyAO"
+					ao.Attachment0 = att
+					ao.MaxTorque   = math.huge
+					ao.MaxAngularVelocity = math.huge
+					ao.Responsiveness = 200
+					ao.Parent     = hrp
+				end
+				ao.CFrame = cam.CFrame
+			end)
+
+			if not ok then
+				-- legacy BodyVelocity / BodyGyro fallback
+				local bv = hrp:FindFirstChild("GhostedFlyBV")
+				if not bv then
+					bv = Instance.new("BodyVelocity")
+					bv.Name = "GhostedFlyBV"
+					bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+					bv.Velocity = Vector3.zero
+					bv.Parent = hrp
+				end
+				local bg = hrp:FindFirstChild("GhostedFlyBG")
+				if not bg then
+					bg = Instance.new("BodyGyro")
+					bg.Name = "GhostedFlyBG"
+					bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+					bg.P = 9e4
+					bg.D = 1e3
+					bg.Parent = hrp
+				end
+				bv.Velocity = vel
+				bg.CFrame   = cam.CFrame
+			end
 		end)
 	end
 
@@ -1207,7 +1255,7 @@ end
 
 makeSection("BODY", 3, movePage)
 
--- NOCLIP: remembers each part's original CanCollide so disabling restores exactly what the game had
+-- NOCLIP
 do
 	local noclipConn
 	local orig = setmetatable({}, { __mode = "k" })
@@ -1240,7 +1288,7 @@ do
 	})
 end
 
--- SPEED: enforced every frame so games that reset WalkSpeed can't undo it
+-- SPEED
 do
 	local walkSpeed = kDefaultWalkSpeed
 	local speedConn, speedOrig
@@ -1248,14 +1296,20 @@ do
 	local function setSpeed(on)
 		disconnect(speedConn)
 		speedConn = nil
-		local hum = getHumanoid()
 		if on then
-			if hum and not speedOrig then speedOrig = hum.WalkSpeed end
+			-- capture orig; re-capture after respawn if stale
+			local hum = getHumanoid()
+			if hum and speedOrig == nil then speedOrig = hum.WalkSpeed end
 			speedConn = RunService.Heartbeat:Connect(function()
 				local h = getHumanoid()
-				if h then h.WalkSpeed = walkSpeed end
+				if h then
+					-- if we just respawned we won't have orig yet
+					if speedOrig == nil then speedOrig = h.WalkSpeed end
+					h.WalkSpeed = walkSpeed
+				end
 			end)
 		else
+			local hum = getHumanoid()
 			if hum and speedOrig then hum.WalkSpeed = speedOrig end
 			speedOrig = nil
 		end
@@ -1283,7 +1337,7 @@ do
 		if on then
 			if hum and origPower == nil then
 				origPower = hum.JumpPower
-				origUse = hum.UseJumpPower
+				origUse   = hum.UseJumpPower
 			end
 			jumpConn = RunService.Heartbeat:Connect(function()
 				local h = getHumanoid()
@@ -1324,7 +1378,6 @@ do
 			end)
 		end
 	end
-
 	makeToggleRow({
 		name = "Infinite Jump", desc = "Jump again in mid-air",
 		key = "infjump", color = Color3.fromRGB(90, 230, 150), order = 9, parent = movePage, callback = setInfiniteJump,
@@ -1337,7 +1390,7 @@ makeSliderRow({
 })
 
 ----------------------------------------------------------------
--- VISUALS TAB (all of this is local rendering only)
+-- VISUALS TAB
 ----------------------------------------------------------------
 makeSection("ESP", 0, visualsPage)
 
@@ -1348,13 +1401,191 @@ local chamsFolder = Instance.new("Folder")
 chamsFolder.Name = "GhostedChams"
 chamsFolder.Parent = guiParent
 
+----------------------------------------------------------------
+-- OVERHEAD TAG (Ghosted Member label + ghost icon above head)
+-- Peer detection: players also running this script get a
+-- "Using Ghosted" badge. We signal via a BoolValue parented
+-- to LocalPlayer with a known name; remote clients see it.
+----------------------------------------------------------------
+do
+	local kTagName       = "GhostedMemberTag"
+	local kPeerSignal    = "GhostedScriptActive"    -- BoolValue we plant on ourselves
+	local kTagColor      = Color3.fromRGB(160, 150, 255)  -- ghost-purple accent
+	local kPeerColor     = Color3.fromRGB(80, 220, 140)   -- teal for same-script peers
+	local kTagHeight     = 3.2   -- studs above HRP
+	local kPeerHeight    = 4.5   -- a little higher so they don't overlap
+
+	-- plant the signal on ourselves so others can detect us
+	local signal = player:FindFirstChild(kPeerSignal)
+	if not signal then
+		signal = Instance.new("BoolValue")
+		signal.Name  = kPeerSignal
+		signal.Value = true
+		signal.Parent = player
+	end
+	onUnload(function() if signal and signal.Parent then signal:Destroy() end end)
+
+	-- ghost pixel art mini (2px scale) for the overhead tag
+	local function makeOverheadGhost(parent)
+		local root = Instance.new("Frame")
+		root.Name = "OverheadGhost"
+		root.BackgroundTransparency = 1
+		root.BorderSizePixel = 0
+		local px = 2
+		root.Size = UDim2.fromOffset(kGhostW * px, kGhostH * px)
+		root.AnchorPoint = Vector2.new(0.5, 1)
+		root.Position = UDim2.new(0.5, 0, 0, 0)
+		root.Parent = parent
+		local pool = {}
+		local function drawFrame(i)
+			local runs = ghostFrames[i] or ghostFrames[1]
+			for j, r in ipairs(runs) do
+				local f = pool[j]
+				if not f then
+					f = Instance.new("Frame")
+					f.BorderSizePixel = 0
+					f.Parent = root
+					pool[j] = f
+				end
+				f.Position = UDim2.fromOffset(r[1] * px, r[2] * px)
+				f.Size     = UDim2.fromOffset(r[3] * px, px)
+				f.BackgroundColor3 = ghostPalette[r[4]]
+				f.Visible = true
+			end
+			for j = #runs + 1, #pool do pool[j].Visible = false end
+		end
+		drawFrame(1)
+		-- animate
+		task.spawn(function()
+			local i = 1
+			while root.Parent do
+				drawFrame(i)
+				i = i % #ghostFrames + 1
+				task.wait(0.07)
+			end
+		end)
+		return root
+	end
+
+	-- build a BillboardGui tag for a character
+	local tagCache = {}
+
+	local function buildTag(char, isPeer)
+		-- remove any existing tag
+		local old = char:FindFirstChild(kTagName)
+		if old then old:Destroy() end
+
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if not hrp then return end
+
+		local bb = Instance.new("BillboardGui")
+		bb.Name             = kTagName
+		bb.Active           = false
+		bb.AlwaysOnTop      = false
+		bb.Size             = UDim2.fromOffset(160, 80)
+		bb.StudsOffset      = Vector3.new(0, isPeer and kPeerHeight or kTagHeight, 0)
+		bb.Adornee          = hrp
+		bb.Parent           = char
+
+		-- background pill
+		local bg = Instance.new("Frame")
+		bg.AnchorPoint = Vector2.new(0.5, 1)
+		bg.Position    = UDim2.new(0.5, 0, 1, 0)
+		bg.Size        = UDim2.fromOffset(140, 28)
+		bg.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+		bg.BackgroundTransparency = 0.25
+		bg.BorderSizePixel = 0
+		bg.Parent = bb
+		addCorner(bg, -1)
+		do
+			local s = addStroke(bg, isPeer and kPeerColor or kTagColor, 1.5, 0)
+			if not isPeer then bindAccent(s, "Color") end
+		end
+
+		-- label
+		local lbl = Instance.new("TextLabel")
+		lbl.Size = UDim2.new(1, 0, 1, 0)
+		lbl.BackgroundTransparency = 1
+		lbl.Text = isPeer and "🤝 Using Ghosted" or "👻 Ghosted Member"
+		lbl.TextColor3 = isPeer and kPeerColor or kTagColor
+		if not isPeer then
+			accentCallbacks[#accentCallbacks + 1] = function(c) pcall(function() lbl.TextColor3 = c end) end
+		end
+		lbl.Font = Enum.Font.GothamBold
+		lbl.TextSize = 11
+		lbl.TextScaled = false
+		lbl.Parent = bg
+
+		-- ghost icon above the pill (only for our own tag, saves perf for peers)
+		if not isPeer then
+			local iconHolder = Instance.new("Frame")
+			iconHolder.AnchorPoint = Vector2.new(0.5, 1)
+			iconHolder.Position = UDim2.new(0.5, 0, 0, -2)
+			iconHolder.Size = UDim2.fromOffset(kGhostW * 2, kGhostH * 2)
+			iconHolder.BackgroundTransparency = 1
+			iconHolder.BorderSizePixel = 0
+			iconHolder.Parent = bb
+			makeOverheadGhost(iconHolder)
+		end
+
+		return bb
+	end
+
+	-- apply tag to a player's current character
+	local function applyTag(plr)
+		if plr == player then
+			-- tag ourselves
+			local char = plr.Character
+			if char then buildTag(char, false) end
+			track(plr.CharacterAdded:Connect(function(c)
+				task.wait(0.2)
+				buildTag(c, false)
+			end))
+		else
+			-- check if they're a peer
+			local isPeer = plr:FindFirstChild(kPeerSignal) ~= nil
+			local char = plr.Character
+			if char then buildTag(char, isPeer) end
+			track(plr.CharacterAdded:Connect(function(c)
+				task.wait(0.2)
+				local peer = plr:FindFirstChild(kPeerSignal) ~= nil
+				buildTag(c, peer)
+			end))
+			-- if they load the script mid-session, rebuild their tag
+			track(plr.ChildAdded:Connect(function(child)
+				if child.Name == kPeerSignal then
+					local c = plr.Character
+					if c then buildTag(c, true) end
+				end
+			end))
+		end
+	end
+
+	-- apply to all current players
+	for _, plr in ipairs(Players:GetPlayers()) do
+		applyTag(plr)
+	end
+	track(Players.PlayerAdded:Connect(applyTag))
+
+	onUnload(function()
+		-- remove all our tags
+		for _, plr in ipairs(Players:GetPlayers()) do
+			local char = plr.Character
+			if char then
+				local tag = char:FindFirstChild(kTagName)
+				if tag then tag:Destroy() end
+			end
+		end
+	end)
+end
+
 do
 	local esp = { boxes = false, names = false, health = false, distance = false, tracers = false }
-	local espCache = {}
+	local espCache  = {}
 	local espMaxDist = kDefaultEspDist
 	local espConn
-	local chamsOn = false
-	local chamsMap = {}
+	local chamsOn   = false
+	local chamsMap  = {}
 
 	local function killDrawing(d)
 		if not d then return end
@@ -1372,10 +1603,10 @@ do
 	local function createEspFor(plr)
 		if espCache[plr] or plr == player then return end
 		espCache[plr] = {
-			box = newDrawing("Square", { Thickness = 1.5, Color = kEspBoxColor, Filled = false, Visible = false }),
-			name = newDrawing("Text", { Size = 14, Center = true, Outline = true, Color = kEspNameColor, Visible = false }),
-			tracer = newDrawing("Line", { Thickness = 1, Color = kTracerColor, Visible = false }),
-			health = newDrawing("Line", { Thickness = 2, Color = Color3.fromRGB(80, 255, 120), Visible = false }),
+			box    = newDrawing("Square", { Thickness = 1.5, Color = kEspBoxColor, Filled = false, Visible = false }),
+			name   = newDrawing("Text",   { Size = 14, Center = true, Outline = true, Color = kEspNameColor, Visible = false }),
+			tracer = newDrawing("Line",   { Thickness = 1, Color = kTracerColor, Visible = false }),
+			health = newDrawing("Line",   { Thickness = 2, Color = Color3.fromRGB(80, 255, 120), Visible = false }),
 		}
 	end
 
@@ -1390,8 +1621,8 @@ do
 	end
 
 	local function hideEsp(d)
-		d.box.Visible = false
-		d.name.Visible = false
+		d.box.Visible    = false
+		d.name.Visible   = false
 		d.tracer.Visible = false
 		d.health.Visible = false
 	end
@@ -1408,43 +1639,44 @@ do
 
 		for plr, d in pairs(espCache) do
 			local char = plr.Character
-			local hrp = char and char:FindFirstChild("HumanoidRootPart")
-			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+			local hum  = char and char:FindFirstChildOfClass("Humanoid")
 
 			if hrp and hum and hum.Health > 0 and not sameTeam(plr)
 				and (hrp.Position - cam.CFrame.Position).Magnitude <= espMaxDist then
 				local top, onScreen = cam:WorldToViewportPoint(hrp.Position + Vector3.new(0, 2.8, 0))
-				local bottom = cam:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3.2, 0))
+				local bottom        = cam:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3.2, 0))
 
 				if onScreen then
 					local height = math.abs(bottom.Y - top.Y)
-					local width = height * 0.55
-					local x = top.X - width / 2
-					local y = math.min(top.Y, bottom.Y)
+					local width  = height * 0.55
+					local x      = top.X - width / 2
+					local y      = math.min(top.Y, bottom.Y)
 
 					d.box.Visible = esp.boxes
 					if esp.boxes then
-						d.box.Size = Vector2.new(width, height)
+						d.box.Size     = Vector2.new(width, height)
 						d.box.Position = Vector2.new(x, y)
 					end
 
 					if esp.names or esp.distance then
 						local parts = {}
-						if esp.names then parts[#parts + 1] = plr.DisplayName end
+						if esp.names    then parts[#parts + 1] = plr.DisplayName end
 						if esp.distance then
 							parts[#parts + 1] = "[" .. math.floor((hrp.Position - cam.CFrame.Position).Magnitude) .. " st]"
 						end
-						d.name.Text = table.concat(parts, " ")
+						d.name.Text     = table.concat(parts, " ")
 						d.name.Position = Vector2.new(top.X, y - 16)
-						d.name.Visible = true
+						d.name.Visible  = true
 					else
 						d.name.Visible = false
 					end
 
 					if esp.health then
-						local pct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-						d.health.From = Vector2.new(x - 5, y + height)
-						d.health.To = Vector2.new(x - 5, y + height - height * pct)
+						local maxHp = math.max(hum.MaxHealth, 1)
+						local pct   = math.clamp(hum.Health / maxHp, 0, 1)
+						d.health.From  = Vector2.new(x - 5, y + height)
+						d.health.To    = Vector2.new(x - 5, y + height - height * pct)
 						d.health.Color = Color3.fromRGB(255 * (1 - pct), 255 * pct, 60)
 						d.health.Visible = true
 					else
@@ -1452,8 +1684,8 @@ do
 					end
 
 					if esp.tracers then
-						d.tracer.From = origin
-						d.tracer.To = Vector2.new(top.X, y + height)
+						d.tracer.From    = origin
+						d.tracer.To      = Vector2.new(top.X, y + height)
 						d.tracer.Visible = true
 					else
 						d.tracer.Visible = false
@@ -1467,7 +1699,6 @@ do
 		end
 	end
 
-	-- starts/stops the render loop depending on whether any ESP option is on
 	local function refreshEsp()
 		local any = esp.boxes or esp.names or esp.health or esp.distance or esp.tracers
 		if any and hasDrawing then
@@ -1485,40 +1716,33 @@ do
 	local function espCallback(flag)
 		return function(on)
 			if on and not hasDrawing then
-				warn("[Ghosted Menu] This executor has no Drawing API, ESP overlays unavailable (Chams still work).")
+				warn("[Ghosted Menu] No Drawing API, ESP overlays unavailable (Chams still work).")
 			end
 			esp[flag] = on
 			refreshEsp()
 		end
 	end
 
-	-- chams use Highlight instances, no Drawing API needed
 	local function removeCham(plr)
 		local h = chamsMap[plr]
-		if h then
-			h:Destroy()
-			chamsMap[plr] = nil
-		end
+		if h then h:Destroy(); chamsMap[plr] = nil end
 	end
 
 	local function applyCham(plr)
 		if plr == player or not chamsOn then return end
 		local char = plr.Character
-		if not char or sameTeam(plr) then
-			removeCham(plr)
-			return
-		end
+		if not char or sameTeam(plr) then removeCham(plr); return end
 		local h = chamsMap[plr]
 		if not h then
 			h = Instance.new("Highlight")
-			h.Name = plr.Name
-			h.FillColor = kChamsFill
-			h.OutlineColor = kChamsOutline
-			h.FillTransparency = 0.5
+			h.Name               = plr.Name
+			h.FillColor          = kChamsFill
+			h.OutlineColor       = kChamsOutline
+			h.FillTransparency   = 0.5
 			h.OutlineTransparency = 0
-			h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-			h.Parent = chamsFolder
-			chamsMap[plr] = h
+			h.DepthMode          = Enum.HighlightDepthMode.AlwaysOnTop
+			h.Parent             = chamsFolder
+			chamsMap[plr]        = h
 		end
 		h.Adornee = char
 	end
@@ -1549,20 +1773,13 @@ do
 		removeCham(plr)
 	end))
 
-	makeToggleRow({ name = "Boxes", desc = "Box around every player", key = "espBoxes",
-		color = Color3.fromRGB(255, 255, 255), order = 1, parent = visualsPage, callback = espCallback("boxes") })
-	makeToggleRow({ name = "Names", desc = "Display names above heads", key = "espNames",
-		color = Color3.fromRGB(255, 255, 255), order = 2, parent = visualsPage, callback = espCallback("names") })
-	makeToggleRow({ name = "Health Bars", desc = "Bar to the left of the box", key = "espHealth",
-		color = Color3.fromRGB(80, 255, 120), order = 3, parent = visualsPage, callback = espCallback("health") })
-	makeToggleRow({ name = "Distance", desc = "Studs away, shown with the name", key = "espDistance",
-		color = Color3.fromRGB(255, 200, 90), order = 4, parent = visualsPage, callback = espCallback("distance") })
-	makeToggleRow({ name = "Tracers", desc = "Line from bottom-center to each player", key = "espTracers",
-		color = Color3.fromRGB(110, 110, 255), order = 5, parent = visualsPage, callback = espCallback("tracers") })
-	makeToggleRow({ name = "Chams", desc = "Highlight players through walls", key = "chams",
-		color = Color3.fromRGB(255, 70, 90), order = 6, parent = visualsPage, callback = setChams })
-	makeToggleRow({ name = "Team Check", desc = "Skip your own teammates", key = "teamCheck",
-		color = Color3.fromRGB(90, 200, 255), order = 7, parent = visualsPage,
+	makeToggleRow({ name = "Boxes",       desc = "Box around every player",           key = "espBoxes",    color = Color3.fromRGB(255,255,255), order = 1, parent = visualsPage, callback = espCallback("boxes")    })
+	makeToggleRow({ name = "Names",       desc = "Display names above heads",          key = "espNames",    color = Color3.fromRGB(255,255,255), order = 2, parent = visualsPage, callback = espCallback("names")    })
+	makeToggleRow({ name = "Health Bars", desc = "Bar to the left of the box",         key = "espHealth",   color = Color3.fromRGB( 80,255,120), order = 3, parent = visualsPage, callback = espCallback("health")   })
+	makeToggleRow({ name = "Distance",    desc = "Studs away, shown with the name",    key = "espDistance", color = Color3.fromRGB(255,200, 90), order = 4, parent = visualsPage, callback = espCallback("distance") })
+	makeToggleRow({ name = "Tracers",     desc = "Line from bottom-center to player",  key = "espTracers",  color = Color3.fromRGB(110,110,255), order = 5, parent = visualsPage, callback = espCallback("tracers")  })
+	makeToggleRow({ name = "Chams",       desc = "Highlight players through walls",    key = "chams",       color = Color3.fromRGB(255, 70, 90), order = 6, parent = visualsPage, callback = setChams               })
+	makeToggleRow({ name = "Team Check",  desc = "Skip your own teammates",            key = "teamCheck",   color = Color3.fromRGB( 90,200,255), order = 7, parent = visualsPage,
 		callback = function(on)
 			espTeamCheck = on
 			if chamsOn then
@@ -1580,7 +1797,7 @@ end
 
 makeSection("WORLD", 9, visualsPage)
 
--- FULLBRIGHT: enforced every frame so day/night cycles can't dim it
+-- FULLBRIGHT
 do
 	local fbConn
 	local saved
@@ -1590,32 +1807,30 @@ do
 		fbConn = nil
 		if on then
 			saved = {
-				Brightness = Lighting.Brightness,
-				ClockTime = Lighting.ClockTime,
-				FogEnd = Lighting.FogEnd,
-				GlobalShadows = Lighting.GlobalShadows,
-				Ambient = Lighting.Ambient,
+				Brightness     = Lighting.Brightness,
+				ClockTime      = Lighting.ClockTime,
+				FogEnd         = Lighting.FogEnd,
+				GlobalShadows  = Lighting.GlobalShadows,
+				Ambient        = Lighting.Ambient,
 				OutdoorAmbient = Lighting.OutdoorAmbient,
 			}
 			fbConn = RunService.RenderStepped:Connect(function()
-				Lighting.Brightness = 2
-				Lighting.ClockTime = 14
-				Lighting.FogEnd = 1e5
-				Lighting.GlobalShadows = false
-				Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+				Lighting.Brightness     = 2
+				Lighting.ClockTime      = 14
+				Lighting.FogEnd         = 1e5
+				Lighting.GlobalShadows  = false
+				Lighting.Ambient        = Color3.fromRGB(178, 178, 178)
 				Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
 			end)
 		elseif saved then
-			for k, v in pairs(saved) do
-				pcall(function() Lighting[k] = v end)
-			end
+			for k, v in pairs(saved) do pcall(function() Lighting[k] = v end) end
 			saved = nil
 		end
 	end
 
 	makeToggleRow({
 		name = "Fullbright", desc = "Removes darkness and fog",
-		key = "fullbright", color = Color3.fromRGB(255, 240, 150), order = 10, parent = visualsPage, callback = setFullbright,
+		key = "fullbright", color = Color3.fromRGB(255,240,150), order = 10, parent = visualsPage, callback = setFullbright,
 	})
 end
 
@@ -1628,7 +1843,7 @@ makeSliderRow({
 	end,
 })
 
--- CROSSHAIR: plain frames in their own gui (ignores the top bar inset so it sits dead center)
+-- CROSSHAIR
 do
 	local crossGui = Instance.new("ScreenGui")
 	crossGui.Name = "GhostedCrosshair"
@@ -1653,21 +1868,21 @@ do
 		bindAccent(f, "BackgroundColor3")
 	end
 	bar(0, -9, 2, 7)
-	bar(0, 9, 2, 7)
+	bar(0,  9, 2, 7)
 	bar(-9, 0, 7, 2)
-	bar(9, 0, 7, 2)
-	bar(0, 0, 2, 2)
+	bar( 9, 0, 7, 2)
+	bar(0,  0, 2, 2)
 
 	onUnload(function() crossGui:Destroy() end)
 
 	makeToggleRow({
 		name = "Crosshair", desc = "Accent colored dot-cross at screen center",
-		key = "crosshair", color = Color3.fromRGB(255, 120, 120), order = 12, parent = visualsPage,
+		key = "crosshair", color = Color3.fromRGB(255,120,120), order = 12, parent = visualsPage,
 		callback = function(on) holder.Visible = on end,
 	})
 end
 
--- CUSTOM TIME: locks the time of day
+-- CUSTOM TIME
 do
 	local timeVal = 14
 	local timeConn, savedTime
@@ -1686,7 +1901,7 @@ do
 	end
 	makeToggleRow({
 		name = "Custom Time", desc = "Locks the time of day (slider below)",
-		key = "customTime", color = Color3.fromRGB(255, 190, 90), order = 13, parent = visualsPage, callback = setCustomTime,
+		key = "customTime", color = Color3.fromRGB(255,190,90), order = 13, parent = visualsPage, callback = setCustomTime,
 	})
 	makeSliderRow({
 		name = "Time of Day", key = "timeOfDay", min = 0, max = 24, default = 14,
@@ -1707,7 +1922,7 @@ do
 end
 
 ----------------------------------------------------------------
--- PLAYERS TAB (search, teleport to, spectate)
+-- PLAYERS TAB
 ----------------------------------------------------------------
 do
 	local searchRow = Instance.new("Frame")
@@ -1750,9 +1965,9 @@ do
 		stopBtn.Text = "Stop Viewing " .. plr.DisplayName
 		stopBtn.Visible = true
 		viewConn = RunService.RenderStepped:Connect(function()
-			local cam = workspace.CurrentCamera
+			local cam  = workspace.CurrentCamera
 			local char = viewing and viewing.Character
-			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local hum  = char and char:FindFirstChildOfClass("Humanoid")
 			if cam and hum and cam.CameraSubject ~= hum then cam.CameraSubject = hum end
 		end)
 		notify("Viewing " .. plr.DisplayName)
@@ -1769,9 +1984,9 @@ do
 
 	local function teleportTo(plr)
 		local myChar = player.Character
-		local hrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-		local tChar = plr.Character
-		local tHrp = tChar and tChar:FindFirstChild("HumanoidRootPart")
+		local hrp    = myChar and myChar:FindFirstChild("HumanoidRootPart")
+		local tChar  = plr.Character
+		local tHrp   = tChar and tChar:FindFirstChild("HumanoidRootPart")
 		if hrp and tHrp then
 			hrp.CFrame = tHrp.CFrame * CFrame.new(0, 0, 3)
 			notify("Teleported to " .. plr.DisplayName)
@@ -1784,16 +1999,17 @@ do
 		local b = Instance.new("TextButton")
 		b.AnchorPoint = Vector2.new(1, 0.5)
 		b.Position = UDim2.new(1, xOff, 0.5, 0)
-		b.Size = UDim2.new(0, 48, 0, 28)
+		b.Size = UDim2.new(0, 46, 0, 26)
 		b.BackgroundColor3 = accent
 		b.Text = text
 		b.TextColor3 = Color3.new(1, 1, 1)
 		b.Font = Enum.Font.GothamBold
-		b.TextSize = 12
+		b.TextSize = 11
 		b.AutoButtonColor = false
 		b.Parent = parent
 		addCorner(b, 6)
 		track(b.MouseButton1Click:Connect(onClick))
+		accentCallbacks[#accentCallbacks + 1] = function(c) b.BackgroundColor3 = c end
 		return b
 	end
 
@@ -1812,7 +2028,7 @@ do
 		for _, plr in ipairs(list) do
 			local match = q == ""
 				or string.find(string.lower(plr.DisplayName), q, 1, true)
-				or string.find(string.lower(plr.Name), q, 1, true)
+				or string.find(string.lower(plr.Name),        q, 1, true)
 			if plr ~= player and match then
 				shown = shown + 1
 
@@ -1825,7 +2041,7 @@ do
 				rows[#rows + 1] = row
 
 				local nameLbl = Instance.new("TextLabel")
-				nameLbl.Size = UDim2.new(1, -130, 0, 18)
+				nameLbl.Size = UDim2.new(1, -160, 0, 18)
 				nameLbl.Position = UDim2.new(0, 12, 0, 5)
 				nameLbl.BackgroundTransparency = 1
 				nameLbl.Text = plr.DisplayName
@@ -1837,7 +2053,7 @@ do
 				nameLbl.Parent = row
 
 				local subLbl = Instance.new("TextLabel")
-				subLbl.Size = UDim2.new(1, -130, 0, 14)
+				subLbl.Size = UDim2.new(1, -160, 0, 14)
 				subLbl.Position = UDim2.new(0, 12, 0, 25)
 				subLbl.BackgroundTransparency = 1
 				subLbl.Text = "@" .. plr.Name
@@ -1848,8 +2064,11 @@ do
 				subLbl.TextTruncate = Enum.TextTruncate.AtEnd
 				subLbl.Parent = row
 
-				smallButton(row, "TP", -62, function() teleportTo(plr) end)
-				smallButton(row, "View", -10, function() startViewing(plr) end)
+				-- three buttons: TP / View / Fling
+				-- xOff anchors from right edge
+				smallButton(row, "Fling", -10,  function() flingPlayer(plr) end)
+				smallButton(row, "View",  -60,  function() startViewing(plr) end)
+				smallButton(row, "TP",   -110,  function() teleportTo(plr) end)
 			end
 		end
 		header.Text = "PLAYERS (" .. shown .. ")"
@@ -1890,14 +2109,14 @@ do
 	})
 end
 
--- CLICK TELEPORT: Ctrl+click on PC, quick tap on mobile (teleports only yourself)
+-- CLICK TELEPORT
 do
 	local beginConn, endConn
 	local touches = setmetatable({}, { __mode = "k" })
 
 	local function teleportToRay(ray)
 		local char = player.Character
-		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 		if not hrp then return end
 		local params = RaycastParams.new()
 		params.FilterDescendantsInstances = { char }
@@ -1940,7 +2159,7 @@ do
 
 	makeToggleRow({
 		name = "Click Teleport", desc = "Ctrl+click (PC) or quick tap (mobile)",
-		key = "clicktp", color = Color3.fromRGB(180, 130, 255), order = 2, parent = miscPage, callback = setClickTp,
+		key = "clicktp", color = Color3.fromRGB(180,130,255), order = 2, parent = miscPage, callback = setClickTp,
 	})
 end
 
@@ -1972,7 +2191,7 @@ do
 				frames = frames + 1
 				acc = acc + dt
 				if acc >= 0.5 then
-					local fps = math.floor(frames / acc + 0.5)
+					local fps  = math.floor(frames / acc + 0.5)
 					local ping = 0
 					pcall(function()
 						ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue() + 0.5)
@@ -1986,24 +2205,11 @@ do
 
 	makeToggleRow({
 		name = "Stats HUD", desc = "FPS and ping at the top of the screen",
-		key = "stats", color = Color3.fromRGB(90, 200, 255), order = 3, parent = miscPage, callback = setStats,
+		key = "stats", color = Color3.fromRGB(90,200,255), order = 3, parent = miscPage, callback = setStats,
 	})
 end
 
-makeButtonRow({
-	text = "Rejoin This Server", order = 7, parent = miscPage,
-	callback = function()
-		notify("Rejoining...")
-		local ok = pcall(function()
-			TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
-		end)
-		if not ok then
-			pcall(function() TeleportService:Teleport(game.PlaceId, player) end)
-		end
-	end,
-})
-
--- ANTI-VOID: snaps you back to your last safe spot when you fall out of the map
+-- ANTI-VOID (fixed: was saving while airborne due to inverted floor check)
 do
 	local voidConn, lastSafe
 	local function setAntiVoid(on)
@@ -2013,12 +2219,15 @@ do
 		if not on then return end
 		voidConn = RunService.Heartbeat:Connect(function()
 			local char = player.Character
-			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 			if not hrp then return end
 			local floorY = workspace.FallenPartsDestroyHeight
 			if hrp.Position.Y > floorY + 60 then
+				-- only save when actually on the ground (FloorMaterial ~= Air means standing)
 				local hum = char:FindFirstChildOfClass("Humanoid")
-				if hum and hum.FloorMaterial ~= Enum.Material.Air then lastSafe = hrp.CFrame end
+				if hum and hum.FloorMaterial ~= Enum.Material.Air then
+					lastSafe = hrp.CFrame
+				end
 			elseif lastSafe then
 				hrp.AssemblyLinearVelocity = Vector3.zero
 				hrp.CFrame = lastSafe + Vector3.new(0, 3, 0)
@@ -2027,11 +2236,11 @@ do
 	end
 	makeToggleRow({
 		name = "Anti-Void", desc = "Saves you from falling out of the map",
-		key = "antivoid", color = Color3.fromRGB(255, 120, 150), order = 4, parent = miscPage, callback = setAntiVoid,
+		key = "antivoid", color = Color3.fromRGB(255,120,150), order = 4, parent = miscPage, callback = setAntiVoid,
 	})
 end
 
--- FPS CAP (needs setfpscap)
+-- FPS CAP
 do
 	local touched = false
 	makeSliderRow({
@@ -2051,18 +2260,22 @@ makeSection("SERVER", 6, miscPage)
 
 local function copyText(text, label)
 	local ok = pcall(function()
-		if setclipboard then
-			setclipboard(text)
-		elseif toclipboard then
-			toclipboard(text)
-		else
-			error("no clipboard api")
-		end
+		if setclipboard then setclipboard(text)
+		elseif toclipboard then toclipboard(text)
+		else error("no clipboard api") end
 	end)
 	notify(ok and (label .. " copied") or "Clipboard not supported here")
 end
 
--- SERVER HOP: picks a random public server that isn't this one (needs game:HttpGet)
+-- FLING POWER (shared with Players tab)
+makeSection("FLING", 20, miscPage)
+makeSliderRow({
+	name = "Fling Power", key = "flingPower", min = 500, max = 50000, default = kDefaultFlingPower,
+	order = 21, parent = miscPage,
+	callback = function(v) flingPower = v end,
+})
+
+-- SERVER HOP
 do
 	local busy = false
 	makeButtonRow({
@@ -2077,8 +2290,8 @@ do
 					return game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")
 				end)
 				if ok and type(body) == "string" then
-					local okJson, data = pcall(function() return HttpService:JSONDecode(body) end)
-					if okJson and type(data) == "table" and type(data.data) == "table" then
+					local okJ, data = pcall(function() return HttpService:JSONDecode(body) end)
+					if okJ and type(data) == "table" and type(data.data) == "table" then
 						local candidates = {}
 						for _, srv in ipairs(data.data) do
 							if srv.id ~= game.JobId and type(srv.playing) == "number"
@@ -2102,21 +2315,248 @@ do
 	})
 end
 
-makeButtonRow({
-	text = "Copy Job ID", order = 9, parent = miscPage,
-	callback = function() copyText(game.JobId, "Job ID") end,
+makeButtonRow({ text = "Rejoin This Server", order = 7, parent = miscPage,
+	callback = function()
+		notify("Rejoining...")
+		local ok = pcall(function()
+			TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+		end)
+		if not ok then pcall(function() TeleportService:Teleport(game.PlaceId, player) end) end
+	end,
 })
-makeButtonRow({
-	text = "Copy Place ID", order = 10, parent = miscPage,
-	callback = function() copyText(tostring(game.PlaceId), "Place ID") end,
-})
-makeButtonRow({
-	text = "Reset Character", order = 11, parent = miscPage,
+makeButtonRow({ text = "Copy Job ID",       order = 9,  parent = miscPage, callback = function() copyText(game.JobId, "Job ID") end })
+makeButtonRow({ text = "Copy Place ID",     order = 10, parent = miscPage, callback = function() copyText(tostring(game.PlaceId), "Place ID") end })
+makeButtonRow({ text = "Reset Character",   order = 11, parent = miscPage,
 	callback = function()
 		local hum = getHumanoid()
 		if hum then hum.Health = 0 end
 	end,
 })
+
+----------------------------------------------------------------
+-- AIMBOT / TRIGGERBOT (Misc tab)
+----------------------------------------------------------------
+makeSection("COMBAT", 30, miscPage)
+
+do
+	-- config knobs
+	local kAimKey      = Enum.KeyCode.E
+	local kAimFovPx    = 150    -- radius in pixels
+	local kAimSmooth   = 0.18   -- 0 = instant, 1 = never arrives
+	local kAimBone     = "Head" -- fallback: HumanoidRootPart
+	local kTriggerMs   = 80     -- ms between trigger shots
+
+	local aimbotOn     = false
+	local triggerbotOn = false
+	local fovCircle    -- Drawing.new("Circle") if available
+	local aimFovPx     = kAimFovPx
+	local aimSmooth    = kAimSmooth
+
+	-- FOV circle
+	local function makeFovCircle()
+		if not hasDrawing then return end
+		if fovCircle then pcall(function() fovCircle:Remove() end) end
+		local ok, c = pcall(function() return Drawing.new("Circle") end)
+		if not ok then return end
+		c.Radius      = aimFovPx
+		c.Color       = Color3.fromRGB(255, 255, 255)
+		c.Transparency = 0.6
+		c.Thickness   = 1
+		c.Filled      = false
+		c.Visible     = false
+		fovCircle     = c
+	end
+	makeFovCircle()
+
+	local function destroyFovCircle()
+		if fovCircle then pcall(function() fovCircle:Remove() end) fovCircle = nil end
+	end
+
+	onUnload(destroyFovCircle)
+
+	-- find best target
+	local function getBestTarget()
+		local cam = workspace.CurrentCamera
+		if not cam then return nil, nil end
+		local vp     = cam.ViewportSize
+		local center = Vector2.new(vp.X / 2, vp.Y / 2)
+		local best, bestDist, bestSP = nil, math.huge, nil
+
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr == player then continue end
+			if espTeamCheck and plr.Team == player.Team then continue end
+			local char = plr.Character
+			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+			local hum  = char and char:FindFirstChildOfClass("Humanoid")
+			if not (hrp and hum and hum.Health > 0) then continue end
+
+			local bone = char:FindFirstChild(kAimBone) or hrp
+			local sp, onScreen = cam:WorldToViewportPoint(bone.Position)
+			if not onScreen then continue end
+
+			local screen2d = Vector2.new(sp.X, sp.Y)
+			local dist     = (screen2d - center).Magnitude
+			if dist < aimFovPx and dist < bestDist then
+				best      = plr
+				bestDist  = dist
+				bestSP    = screen2d
+			end
+		end
+		return best, bestSP
+	end
+
+	-- aimbot loop
+	local aimConn
+	local triggerConn
+	local lastTrigger = 0
+
+	local function setAimbot(on)
+		aimbotOn = on
+		disconnect(aimConn)
+		aimConn = nil
+		if fovCircle then fovCircle.Visible = on end
+
+		if on then
+			aimConn = RunService.RenderStepped:Connect(function()
+				local cam = workspace.CurrentCamera
+				if not cam then return end
+				local vp = cam.ViewportSize
+
+				-- update FOV circle position
+				if fovCircle then
+					fovCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
+					fovCircle.Radius   = aimFovPx
+					fovCircle.Visible  = true
+				end
+
+				if not UserInputService:IsKeyDown(kAimKey) then return end
+				if UserInputService:GetFocusedTextBox() then return end
+
+				local _, bestSP = getBestTarget()
+				if not bestSP then return end
+
+				local center = Vector2.new(vp.X / 2, vp.Y / 2)
+				local delta  = bestSP - center
+				local move   = delta * (1 - aimSmooth)
+
+				-- synthesize mouse move
+				local inp = {
+					[1] = {
+						type            = 0, -- INPUT_MOUSE
+						mouseData = {
+							dx              = math.floor(move.X + 0.5),
+							dy              = math.floor(move.Y + 0.5),
+							mouseData_      = 0,
+							dwFlags         = 0x0001, -- MOUSEEVENTF_MOVE
+							time            = 0,
+							dwExtraInfo     = 0,
+						},
+					},
+				}
+				-- use mousemoverel if available (most executors), else movemouse
+				local sent = false
+				if typeof(mousemoverel) == "function" then
+					pcall(function()
+						mousemoverel(math.floor(move.X + 0.5), math.floor(move.Y + 0.5))
+						sent = true
+					end)
+				end
+				if not sent then
+					pcall(function()
+						movemouse(math.floor(move.X + 0.5), math.floor(move.Y + 0.5))
+					end)
+				end
+			end)
+		else
+			if fovCircle then fovCircle.Visible = false end
+		end
+	end
+
+	local function setTriggerbot(on)
+		triggerbotOn = on
+		disconnect(triggerConn)
+		triggerConn = nil
+		if not on then return end
+
+		triggerConn = RunService.Heartbeat:Connect(function()
+			if not triggerbotOn then return end
+			if UserInputService:GetFocusedTextBox() then return end
+			local now = os.clock() * 1000
+			if now - lastTrigger < kTriggerMs then return end
+
+			local cam = workspace.CurrentCamera
+			if not cam then return end
+			local vp     = cam.ViewportSize
+			local center = Vector2.new(vp.X / 2, vp.Y / 2)
+
+			-- check if any enemy is within a small pixel radius of center
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr == player then continue end
+				if espTeamCheck and plr.Team == player.Team then continue end
+				local char = plr.Character
+				local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+				local hum  = char and char:FindFirstChildOfClass("Humanoid")
+				if not (hrp and hum and hum.Health > 0) then continue end
+
+				local sp, onScreen = cam:WorldToViewportPoint(hrp.Position)
+				if not onScreen then continue end
+
+				if (Vector2.new(sp.X, sp.Y) - center).Magnitude < 30 then
+					lastTrigger = now
+					-- fire mouse1 click via executor API
+					local fired = false
+					if typeof(mouse1click) == "function" then
+						pcall(mouse1click)
+						fired = true
+					elseif typeof(mouse1press) == "function" and typeof(mouse1release) == "function" then
+						pcall(mouse1press)
+						task.delay(0.05, function() pcall(mouse1release) end)
+						fired = true
+					end
+					-- fallback: VirtualInputManager (rare)
+					if not fired then
+						pcall(function()
+							local vim = game:GetService("VirtualInputManager")
+							vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, true,  game, 1)
+							task.delay(0.05, function()
+								vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, false, game, 1)
+							end)
+						end)
+					end
+					break
+				end
+			end
+		end)
+	end
+
+	makeToggleRow({
+		name = "Aimbot",      desc = "Hold E to snap mouse toward nearest head",
+		key = "aimbot",       color = Color3.fromRGB(255, 80, 80), order = 31, parent = miscPage, callback = setAimbot,
+	})
+	makeToggleRow({
+		name = "Triggerbot",  desc = "Auto-click when crosshair is on a player",
+		key = "triggerbot",   color = Color3.fromRGB(255, 150, 60), order = 32, parent = miscPage, callback = setTriggerbot,
+	})
+	makeSliderRow({
+		name = "Aim FOV (px)", key = "aimFov", min = 30, max = 400, default = kAimFovPx,
+		order = 33, parent = miscPage,
+		callback = function(v)
+			aimFovPx = v
+			if fovCircle then fovCircle.Radius = v end
+		end,
+	})
+	makeSliderRow({
+		name = "Aim Smooth %", key = "aimSmooth", min = 0, max = 95, default = math.floor(kAimSmooth * 100),
+		order = 34, parent = miscPage,
+		callback = function(v) aimSmooth = v / 100 end,
+	})
+
+	onUnload(function()
+		disconnect(aimConn)
+		disconnect(triggerConn)
+		destroyFovCircle()
+	end)
+end
 
 ----------------------------------------------------------------
 -- CONFIG TAB
@@ -2174,26 +2614,11 @@ makeSliderRow({
 })
 
 makeSection("STARTUP", 4, configPage)
-makeToggleRow({
-	name = "Startup Splash", desc = "Ghost intro animation when the menu loads",
-	opt = "splash", color = Color3.fromRGB(190, 190, 255), order = 5, parent = configPage,
-	callback = function() end,
-})
-makeToggleRow({
-	name = "Open On Load", desc = "Show the menu right after loading",
-	opt = "openOnLoad", color = Color3.fromRGB(190, 190, 255), order = 6, parent = configPage,
-	callback = function() end,
-})
-makeToggleRow({
-	name = "Notifications", desc = "Toast messages at the bottom",
-	opt = "notifs", color = Color3.fromRGB(190, 190, 255), order = 7, parent = configPage,
-	callback = function() end,
-})
-makeToggleRow({
-	name = "Floating Ghost", desc = "Hide it and use the menu key instead",
-	opt = "showButton", color = Color3.fromRGB(190, 190, 255), order = 8, parent = configPage,
-	callback = function(on) toggleBtn.Visible = on end,
-})
+makeToggleRow({ name = "Startup Splash",  desc = "Ghost intro animation when the menu loads", opt = "splash",      color = Color3.fromRGB(190,190,255), order = 5, parent = configPage, callback = function() end })
+makeToggleRow({ name = "Open On Load",    desc = "Show the menu right after loading",          opt = "openOnLoad",  color = Color3.fromRGB(190,190,255), order = 6, parent = configPage, callback = function() end })
+makeToggleRow({ name = "Notifications",   desc = "Toast messages at the bottom",               opt = "notifs",      color = Color3.fromRGB(190,190,255), order = 7, parent = configPage, callback = function() end })
+makeToggleRow({ name = "Floating Ghost",  desc = "Hide it and use the menu key instead",       opt = "showButton",  color = Color3.fromRGB(190,190,255), order = 8, parent = configPage,
+	callback = function(on) toggleBtn.Visible = on end })
 
 makeSection("CONTROLS", 9, configPage)
 
@@ -2254,10 +2679,7 @@ track(UserInputService.InputBegan:Connect(function(input, processed)
 	end
 	if processed then return end
 	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-	if input.KeyCode == toggleKey then
-		toggleMenu()
-		return
-	end
+	if input.KeyCode == toggleKey then toggleMenu(); return end
 	local name = input.KeyCode.Name
 	for key, bound in pairs(settings.binds) do
 		if bound == name then
@@ -2273,10 +2695,10 @@ makeButtonRow({
 	text = "Reset All", order = 13, parent = configPage,
 	callback = function()
 		for _, s in ipairs(toggleSetters) do pcall(s, false, true) end
-		for _, r in ipairs(sliderResets) do pcall(r) end
+		for _, r in ipairs(sliderResets)  do pcall(r) end
 		settings.toggles = {}
 		settings.sliders = {}
-		settings.binds = {}
+		settings.binds   = {}
 		for key in pairs(featureToggles) do refreshBindTag(key) end
 		saveSettings()
 		notify("Everything reset")
@@ -2286,7 +2708,7 @@ makeButtonRow({
 local function unload()
 	alive = false
 	for _, s in ipairs(toggleSetters) do pcall(s, false, true) end
-	for _, fn in ipairs(cleanups) do pcall(fn) end
+	for _, fn in ipairs(cleanups)     do pcall(fn) end
 	pcall(function() workspace.Gravity = origGravity end)
 	pcall(function()
 		if workspace.CurrentCamera then workspace.CurrentCamera.FieldOfView = origFov end
@@ -2325,8 +2747,8 @@ end
 
 local function runSplash()
 	local cam = workspace.CurrentCamera
-	local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
-	local px = math.clamp(math.floor(math.min(vp.X, vp.Y) / 150), 2, 4)
+	local vp  = cam and cam.ViewportSize or Vector2.new(1280, 720)
+	local px  = math.clamp(math.floor(math.min(vp.X, vp.Y) / 150), 2, 4)
 	local gw, gh = kGhostW * px, kGhostH * px
 	local skipped = false
 
@@ -2342,13 +2764,12 @@ local function runSplash()
 	overlay.Parent = screenGui
 	track(overlay.MouseButton1Click:Connect(function() skipped = true end))
 
-	-- CanvasGroup lets the whole ghost fade as one piece; plain frame is the fallback
 	local okCanvas, holder = pcall(Instance.new, "CanvasGroup")
 	if not okCanvas or typeof(holder) ~= "Instance" then holder = Instance.new("Frame") end
 	local isCanvas = holder:IsA("CanvasGroup")
 
 	local blockH = gh + 92
-	local top = -math.floor(blockH / 2)
+	local top    = -math.floor(blockH / 2)
 	local ghostY = top + math.floor(gh / 2)
 	local titleY = top + gh + 14
 
@@ -2414,7 +2835,6 @@ local function runSplash()
 		while os.clock() - t0 < t and not skipped and alive do task.wait() end
 	end
 
-	-- ghost animation runs on its own thread until the exit
 	local running = true
 	task.spawn(function()
 		local i = 1
@@ -2425,17 +2845,13 @@ local function runSplash()
 		end
 	end)
 
-	-- in
 	TweenService:Create(overlay, TweenInfo.new(0.25), { BackgroundTransparency = 0.08 }):Play()
-	if isCanvas then
-		TweenService:Create(holder, TweenInfo.new(0.5), { GroupTransparency = 0 }):Play()
-	end
+	if isCanvas then TweenService:Create(holder, TweenInfo.new(0.5), { GroupTransparency = 0 }):Play() end
 	TweenService:Create(holder, TweenInfo.new(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 		Position = UDim2.new(0.5, 0, 0.5, ghostY),
 	}):Play()
 	pause(0.5)
 
-	-- title types out, bar fills in steps
 	local text = "ghosted menu"
 	for n = 1, #text do
 		if skipped or not alive then break end
@@ -2452,7 +2868,6 @@ local function runSplash()
 	end
 	pause(0.25)
 
-	-- out: the ghost shrinks into the floating button
 	running = false
 	local outInfo = TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	if alive and toggleBtn.Visible then
@@ -2460,11 +2875,9 @@ local function runSplash()
 		TweenService:Create(holder, outInfo, { Position = UDim2.fromOffset(target.X, target.Y) }):Play()
 		TweenService:Create(holderScale, outInfo, { Scale = 0.3 }):Play()
 	end
-	if isCanvas then
-		TweenService:Create(holder, TweenInfo.new(0.45), { GroupTransparency = 1 }):Play()
-	end
-	TweenService:Create(title, TweenInfo.new(0.3), { TextTransparency = 1 }):Play()
-	TweenService:Create(sub, TweenInfo.new(0.3), { TextTransparency = 1 }):Play()
+	if isCanvas then TweenService:Create(holder, TweenInfo.new(0.45), { GroupTransparency = 1 }):Play() end
+	TweenService:Create(title,   TweenInfo.new(0.3), { TextTransparency = 1 }):Play()
+	TweenService:Create(sub,     TweenInfo.new(0.3), { TextTransparency = 1 }):Play()
 	TweenService:Create(barBack, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
 	TweenService:Create(barFill, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
 	TweenService:Create(overlay, TweenInfo.new(0.45), { BackgroundTransparency = 1 }):Play()
