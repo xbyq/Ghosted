@@ -415,7 +415,7 @@ creditLabel.Name = "Credit"
 creditLabel.Size = UDim2.new(1, -140, 0, 16)
 creditLabel.Position = UDim2.new(0, 12, 0, 32)
 creditLabel.BackgroundTransparency = 1
-creditLabel.Text = "made by Dani"
+creditLabel.Text = "made by Dani&Hade"
 creditLabel.TextColor3 = kTextDim
 creditLabel.Font = Enum.Font.Gotham
 creditLabel.TextSize = 13
@@ -2334,142 +2334,181 @@ makeButtonRow({ text = "Reset Character",   order = 11, parent = miscPage,
 })
 
 ----------------------------------------------------------------
--- AIMBOT / TRIGGERBOT (Misc tab)
+-- COMBAT (Aimbot / Triggerbot)
 ----------------------------------------------------------------
 makeSection("COMBAT", 30, miscPage)
 
 do
-	-- config knobs
-	local kAimKey      = Enum.KeyCode.E
-	local kAimFovPx    = 150    -- radius in pixels
-	local kAimSmooth   = 0.18   -- 0 = instant, 1 = never arrives
-	local kAimBone     = "Head" -- fallback: HumanoidRootPart
-	local kTriggerMs   = 80     -- ms between trigger shots
+	-- ============ CONFIG ============
+	local kAimKey        = Enum.KeyCode.E
+	local kDefaultFovPx  = 150
+	local kDefaultSmooth = 0.25     -- 0 = instant snap, 1 = never arrives
+	local kTriggerMs     = 80
+	local kAimBone       = "Head"
 
 	local aimbotOn     = false
 	local triggerbotOn = false
-	local fovCircle    -- Drawing.new("Circle") if available
-	local aimFovPx     = kAimFovPx
-	local aimSmooth    = kAimSmooth
+	local aimFovPx     = kDefaultFovPx
+	local aimSmooth    = kDefaultSmooth
+	local useCameraAim = true       -- camera-lock vs mouse-move
+	local showFov      = true
 
-	-- FOV circle
-	local function makeFovCircle()
-		if not hasDrawing then return end
-		if fovCircle then pcall(function() fovCircle:Remove() end) end
-		local ok, c = pcall(function() return Drawing.new("Circle") end)
-		if not ok then return end
-		c.Radius      = aimFovPx
-		c.Color       = Color3.fromRGB(255, 255, 255)
-		c.Transparency = 0.6
-		c.Thickness   = 1
-		c.Filled      = false
-		c.Visible     = false
-		fovCircle     = c
+	local aimConn, triggerConn
+	local lastTrigger  = 0
+	local savedCamType = nil
+	local fovGui, fovFrame, fovStroke
+
+	-- ============ FOV CIRCLE (pure GUI, no Drawing) ============
+	do
+		fovGui = Instance.new("ScreenGui")
+		fovGui.Name = "GhostedAimFov"
+		fovGui.ResetOnSpawn = false
+		fovGui.IgnoreGuiInset = true
+		fovGui.DisplayOrder = 997
+		fovGui.Parent = guiParent
+
+		fovFrame = Instance.new("Frame")
+		fovFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+		fovFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+		fovFrame.BackgroundTransparency = 1
+		fovFrame.BorderSizePixel = 0
+		fovFrame.Size = UDim2.fromOffset(aimFovPx * 2, aimFovPx * 2)
+		fovFrame.Visible = false
+		fovFrame.Parent = fovGui
+		addCorner(fovFrame, -1)
+		fovStroke = addStroke(fovFrame, accent, 1, 0.5)
+		bindAccent(fovStroke, "Color")
+
+		onUnload(function() fovGui:Destroy() end)
 	end
-	makeFovCircle()
 
-	local function destroyFovCircle()
-		if fovCircle then pcall(function() fovCircle:Remove() end) fovCircle = nil end
+	local function syncFovCircle()
+		if not fovFrame then return end
+		fovFrame.Size = UDim2.fromOffset(aimFovPx * 2, aimFovPx * 2)
+		fovFrame.Visible = aimbotOn and showFov
 	end
 
-	onUnload(destroyFovCircle)
-
-	-- find best target
+	-- ============ TARGET PICKING ============
 	local function getBestTarget()
 		local cam = workspace.CurrentCamera
-		if not cam then return nil, nil end
+		if not cam then return nil, nil, nil end
 		local vp     = cam.ViewportSize
 		local center = Vector2.new(vp.X / 2, vp.Y / 2)
-		local best, bestDist, bestSP = nil, math.huge, nil
+
+		local best, bestDist, bestPos = nil, math.huge, nil
 
 		for _, plr in ipairs(Players:GetPlayers()) do
-			if plr == player then continue end
-			if espTeamCheck and plr.Team == player.Team then continue end
-			local char = plr.Character
-			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-			local hum  = char and char:FindFirstChildOfClass("Humanoid")
-			if not (hrp and hum and hum.Health > 0) then continue end
-
-			local bone = char:FindFirstChild(kAimBone) or hrp
-			local sp, onScreen = cam:WorldToViewportPoint(bone.Position)
-			if not onScreen then continue end
-
-			local screen2d = Vector2.new(sp.X, sp.Y)
-			local dist     = (screen2d - center).Magnitude
-			if dist < aimFovPx and dist < bestDist then
-				best      = plr
-				bestDist  = dist
-				bestSP    = screen2d
+			if plr ~= player then
+				local skip = false
+				if espTeamCheck and plr.Team ~= nil and plr.Team == player.Team then
+					skip = true
+				end
+				if not skip then
+					local char = plr.Character
+					local hum  = char and char:FindFirstChildOfClass("Humanoid")
+					local bone = char and (char:FindFirstChild(kAimBone) or char:FindFirstChild("HumanoidRootPart"))
+					if hum and hum.Health > 0 and bone then
+						local sp, onScreen = cam:WorldToViewportPoint(bone.Position)
+						if onScreen then
+							local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+							if d <= aimFovPx and d < bestDist then
+								best, bestDist, bestPos = plr, d, bone.Position
+							end
+						end
+					end
+				end
 			end
 		end
-		return best, bestSP
+		return best, bestPos, bestDist
 	end
 
-	-- aimbot loop
-	local aimConn
-	local triggerConn
-	local lastTrigger = 0
-
+	-- ============ AIM LOGIC ============
 	local function setAimbot(on)
 		aimbotOn = on
 		disconnect(aimConn)
 		aimConn = nil
-		if fovCircle then fovCircle.Visible = on end
 
-		if on then
-			aimConn = RunService.RenderStepped:Connect(function()
+		if not on then
+			-- restore camera type if we hijacked it
+			if savedCamType ~= nil then
 				local cam = workspace.CurrentCamera
-				if not cam then return end
-				local vp = cam.ViewportSize
-
-				-- update FOV circle position
-				if fovCircle then
-					fovCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
-					fovCircle.Radius   = aimFovPx
-					fovCircle.Visible  = true
-				end
-
-				if not UserInputService:IsKeyDown(kAimKey) then return end
-				if UserInputService:GetFocusedTextBox() then return end
-
-				local _, bestSP = getBestTarget()
-				if not bestSP then return end
-
-				local center = Vector2.new(vp.X / 2, vp.Y / 2)
-				local delta  = bestSP - center
-				local move   = delta * (1 - aimSmooth)
-
-				-- synthesize mouse move
-				local inp = {
-					[1] = {
-						type            = 0, -- INPUT_MOUSE
-						mouseData = {
-							dx              = math.floor(move.X + 0.5),
-							dy              = math.floor(move.Y + 0.5),
-							mouseData_      = 0,
-							dwFlags         = 0x0001, -- MOUSEEVENTF_MOVE
-							time            = 0,
-							dwExtraInfo     = 0,
-						},
-					},
-				}
-				-- use mousemoverel if available (most executors), else movemouse
-				local sent = false
-				if typeof(mousemoverel) == "function" then
-					pcall(function()
-						mousemoverel(math.floor(move.X + 0.5), math.floor(move.Y + 0.5))
-						sent = true
-					end)
-				end
-				if not sent then
-					pcall(function()
-						movemouse(math.floor(move.X + 0.5), math.floor(move.Y + 0.5))
-					end)
-				end
-			end)
-		else
-			if fovCircle then fovCircle.Visible = false end
+				if cam then cam.CameraType = savedCamType end
+				savedCamType = nil
+			end
+			syncFovCircle()
+			return
 		end
+		syncFovCircle()
+
+		aimConn = RunService.RenderStepped:Connect(function()
+			if UserInputService:GetFocusedTextBox() then return end
+			if not UserInputService:IsKeyDown(kAimKey) then
+				-- release: restore camera type
+				if savedCamType ~= nil then
+					local cam = workspace.CurrentCamera
+					if cam then cam.CameraType = savedCamType end
+					savedCamType = nil
+				end
+				return
+			end
+
+			local cam = workspace.CurrentCamera
+			if not cam then return end
+
+			local _, targetPos = getBestTarget()
+			if not targetPos then return end
+
+			if useCameraAim then
+				-- camera-lock: rotate the camera CFrame toward the target
+				if savedCamType == nil and cam.CameraType ~= Enum.CameraType.Scriptable then
+					savedCamType = cam.CameraType
+				end
+				cam.CameraType = Enum.CameraType.Scriptable
+
+				local origin = cam.CFrame.Position
+				local goal   = CFrame.new(origin, targetPos)
+				local t      = 1 - aimSmooth
+				cam.CFrame   = cam.CFrame:Lerp(goal, math.clamp(t, 0.02, 1))
+			else
+				-- mouse-move fallback (executor-dependent)
+				local vp     = cam.ViewportSize
+				local center = Vector2.new(vp.X / 2, vp.Y / 2)
+				local sp     = cam:WorldToViewportPoint(targetPos)
+				local delta  = (Vector2.new(sp.X, sp.Y) - center) * (1 - aimSmooth)
+				if typeof(mousemoverel) == "function" then
+					pcall(mousemoverel, math.floor(delta.X + 0.5), math.floor(delta.Y + 0.5))
+				end
+			end
+		end)
+	end
+
+	-- ============ TRIGGERBOT ============
+	local function fireClick(vp)
+		-- Most reliable across executors:
+		local ok = pcall(function()
+			local vu = game:GetService("VirtualUser")
+			vu:CaptureController()
+			vu:ClickButton1(Vector2.new(vp.X / 2, vp.Y / 2))
+		end)
+		if ok then return end
+
+		-- Fallbacks
+		if typeof(mouse1click) == "function" then
+			pcall(mouse1click)
+			return
+		end
+		if typeof(mouse1press) == "function" and typeof(mouse1release) == "function" then
+			pcall(mouse1press)
+			task.delay(0.05, function() pcall(mouse1release) end)
+			return
+		end
+		pcall(function()
+			local vim = game:GetService("VirtualInputManager")
+			vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, true,  game, 1)
+			task.delay(0.05, function()
+				vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, false, game, 1)
+			end)
+		end)
 	end
 
 	local function setTriggerbot(on)
@@ -2489,73 +2528,94 @@ do
 			local vp     = cam.ViewportSize
 			local center = Vector2.new(vp.X / 2, vp.Y / 2)
 
-			-- check if any enemy is within a small pixel radius of center
 			for _, plr in ipairs(Players:GetPlayers()) do
-				if plr == player then continue end
-				if espTeamCheck and plr.Team == player.Team then continue end
-				local char = plr.Character
-				local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-				local hum  = char and char:FindFirstChildOfClass("Humanoid")
-				if not (hrp and hum and hum.Health > 0) then continue end
-
-				local sp, onScreen = cam:WorldToViewportPoint(hrp.Position)
-				if not onScreen then continue end
-
-				if (Vector2.new(sp.X, sp.Y) - center).Magnitude < 30 then
-					lastTrigger = now
-					-- fire mouse1 click via executor API
-					local fired = false
-					if typeof(mouse1click) == "function" then
-						pcall(mouse1click)
-						fired = true
-					elseif typeof(mouse1press) == "function" and typeof(mouse1release) == "function" then
-						pcall(mouse1press)
-						task.delay(0.05, function() pcall(mouse1release) end)
-						fired = true
+				if plr ~= player then
+					local skip = espTeamCheck and plr.Team ~= nil and plr.Team == player.Team
+					if not skip then
+						local char = plr.Character
+						local hum  = char and char:FindFirstChildOfClass("Humanoid")
+						local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+						if hum and hum.Health > 0 and hrp then
+							local sp, onScreen = cam:WorldToViewportPoint(hrp.Position)
+							if onScreen and (Vector2.new(sp.X, sp.Y) - center).Magnitude < 30 then
+								lastTrigger = now
+								fireClick(vp)
+								break
+							end
+						end
 					end
-					-- fallback: VirtualInputManager (rare)
-					if not fired then
-						pcall(function()
-							local vim = game:GetService("VirtualInputManager")
-							vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, true,  game, 1)
-							task.delay(0.05, function()
-								vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, false, game, 1)
-							end)
-						end)
-					end
-					break
 				end
 			end
 		end)
 	end
 
-	makeToggleRow({
-		name = "Aimbot",      desc = "Hold E to snap mouse toward nearest head",
-		key = "aimbot",       color = Color3.fromRGB(255, 80, 80), order = 31, parent = miscPage, callback = setAimbot,
-	})
-	makeToggleRow({
-		name = "Triggerbot",  desc = "Auto-click when crosshair is on a player",
-		key = "triggerbot",   color = Color3.fromRGB(255, 150, 60), order = 32, parent = miscPage, callback = setTriggerbot,
-	})
-	makeSliderRow({
-		name = "Aim FOV (px)", key = "aimFov", min = 30, max = 400, default = kAimFovPx,
-		order = 33, parent = miscPage,
-		callback = function(v)
-			aimFovPx = v
-			if fovCircle then fovCircle.Radius = v end
-		end,
-	})
-	makeSliderRow({
-		name = "Aim Smooth %", key = "aimSmooth", min = 0, max = 95, default = math.floor(kAimSmooth * 100),
-		order = 34, parent = miscPage,
-		callback = function(v) aimSmooth = v / 100 end,
-	})
-
 	onUnload(function()
 		disconnect(aimConn)
 		disconnect(triggerConn)
-		destroyFovCircle()
+		if savedCamType ~= nil then
+			local cam = workspace.CurrentCamera
+			if cam then cam.CameraType = savedCamType end
+			savedCamType = nil
+		end
 	end)
+
+	-- ============ UI ============
+	makeToggleRow({
+		name     = "Aimbot",
+		desc     = "Hold E to aim (camera-lock)",
+		key      = "aimbot",
+		color    = Color3.fromRGB(255, 80, 80),
+		order    = 31,
+		parent   = miscPage,
+		callback = setAimbot,
+	})
+	makeToggleRow({
+		name     = "Triggerbot",
+		desc     = "Auto-click when crosshair is on a player",
+		key      = "triggerbot",
+		color    = Color3.fromRGB(255, 150, 60),
+		order    = 32,
+		parent   = miscPage,
+		callback = setTriggerbot,
+	})
+	makeToggleRow({
+		name     = "Camera Aim Mode",
+		desc     = "ON = rotate camera. OFF = move mouse (executor dependent)",
+		key      = "aimCamMode",
+		color    = Color3.fromRGB(255, 80, 80),
+		order    = 33,
+		parent   = miscPage,
+		callback = function(on) useCameraAim = on end,
+	})
+	makeToggleRow({
+		name     = "Show FOV Ring",
+		desc     = "Draw the aimbot FOV on screen",
+		key      = "aimShowFov",
+		color    = Color3.fromRGB(255, 80, 80),
+		order    = 34,
+		parent   = miscPage,
+		callback = function(on) showFov = on; syncFovCircle() end,
+	})
+	makeSliderRow({
+		name     = "Aim FOV (px)",
+		key      = "aimFov",
+		min      = 30,
+		max      = 400,
+		default  = kDefaultFovPx,
+		order    = 35,
+		parent   = miscPage,
+		callback = function(v) aimFovPx = v; syncFovCircle() end,
+	})
+	makeSliderRow({
+		name     = "Aim Smooth %",
+		key      = "aimSmooth",
+		min      = 0,
+		max      = 95,
+		default  = math.floor(kDefaultSmooth * 100),
+		order    = 36,
+		parent   = miscPage,
+		callback = function(v) aimSmooth = v / 100 end,
+	})
 end
 
 ----------------------------------------------------------------
