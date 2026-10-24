@@ -1,7 +1,7 @@
 --[[
 	Ghosted Menu - universal executor script (PC + mobile)
 
-	Tabs:   Move / Visuals / Players / Misc / Config
+	Tabs:   Move / Visuals / Players / Misc / Extra / Config
 	Open:   RightShift (rebindable in Config) or tap the floating ghost
 	Binds:  right-click any toggle (PC), press a key to bind it, Esc clears it
 	Saves:  toggles, sliders, binds, options, accent color and menu key -> GhostedMenu_settings.json
@@ -25,6 +25,8 @@
 	  - Accent swatches show active ring
 	  - Brick Players button on player rows
 	  - Close button styled as ×
+	  - NEW "Extra" tab: Bunny Hop, Air Walk, Spin, No Ragdoll, Anti-Fling,
+	    Respawn Here, Auto Clicker, Camera Noclip, FPS Boost, Waypoints
 
 	From earlier version:
 	  - Fly: deprecated BodyVelocity/BodyGyro → LinearVelocity + AlignOrientation
@@ -434,7 +436,7 @@ creditLabel.Name = "Credit"
 creditLabel.Size = UDim2.new(1, -140, 0, 16)
 creditLabel.Position = UDim2.new(0, 12, 0, 32)
 creditLabel.BackgroundTransparency = 1
-creditLabel.Text = "made by Dani&Hade"
+creditLabel.Text = "made by Dani & elixir & hade & elixir & hade"
 creditLabel.TextColor3 = kTextDim
 creditLabel.Font = Enum.Font.Gotham
 creditLabel.TextSize = 13
@@ -517,26 +519,44 @@ makeDraggable(titleBar, mainFrame, nil)
 ----------------------------------------------------------------
 -- TABS + PAGES
 ----------------------------------------------------------------
-local tabBar = Instance.new("Frame")
+-- Horizontally scrollable tab bar (drag / swipe / scrollbar / Shift+wheel)
+local tabBar = Instance.new("ScrollingFrame")
 tabBar.Name = "TabBar"
-tabBar.Size = UDim2.new(1, -20, 0, 32)
+tabBar.Size = UDim2.new(1, -20, 0, 34)
 tabBar.Position = UDim2.new(0, 10, 0, 62)
 tabBar.BackgroundTransparency = 1
+tabBar.BorderSizePixel = 0
+tabBar.Active = true
+tabBar.ScrollingDirection = Enum.ScrollingDirection.X
+tabBar.CanvasSize = UDim2.new(0, 0, 0, 0)
+tabBar.AutomaticCanvasSize = Enum.AutomaticSize.X
+tabBar.ScrollBarThickness = 3
+tabBar.ScrollBarImageTransparency = 0.4
+tabBar.ElasticBehavior = Enum.ElasticBehavior.Never
+tabBar.HorizontalScrollBarInset = Enum.ScrollBarInset.Always
 tabBar.Parent = mainFrame
+bindAccent(tabBar, "ScrollBarImageColor3")
+
+local tabRow = Instance.new("Frame")
+tabRow.Name = "TabRow"
+tabRow.Size = UDim2.new(0, 0, 0, 28)
+tabRow.AutomaticSize = Enum.AutomaticSize.X
+tabRow.BackgroundTransparency = 1
+tabRow.Parent = tabBar
 
 do
 	local l = Instance.new("UIListLayout")
 	l.FillDirection = Enum.FillDirection.Horizontal
 	l.Padding = UDim.new(0, 6)
 	l.SortOrder = Enum.SortOrder.LayoutOrder
-	l.Parent = tabBar
+	l.Parent = tabRow
 end
 
--- Sliding indicator bar under tabs
+-- Sliding indicator bar under tabs (not inside the list layout)
 local tabIndicator = Instance.new("Frame")
 tabIndicator.Name = "TabIndicator"
 tabIndicator.Size = UDim2.new(0, 40, 0, 2)
-tabIndicator.Position = UDim2.new(0, 0, 1, 2)
+tabIndicator.Position = UDim2.new(0, 0, 0, 29)
 tabIndicator.BorderSizePixel = 0
 tabIndicator.ZIndex = 5
 tabIndicator.Parent = tabBar
@@ -545,12 +565,12 @@ addCorner(tabIndicator, -1)
 
 local pagesHolder = Instance.new("Frame")
 pagesHolder.Name = "Pages"
-pagesHolder.Size = UDim2.new(1, -20, 1, -164)
-pagesHolder.Position = UDim2.new(0, 10, 0, 102)
+pagesHolder.Size = UDim2.new(1, -20, 1, -166)
+pagesHolder.Position = UDim2.new(0, 10, 0, 104)
 pagesHolder.BackgroundTransparency = 1
 pagesHolder.Parent = mainFrame
 
-local tabNames = { "Move", "Visuals", "Players", "Misc", "Config" }
+local tabNames = { "Move", "Visuals", "Players", "Misc", "Extra", "Config" }
 local tabButtons = {}
 local pages = {}
 local currentTab = "Move"
@@ -566,10 +586,24 @@ local function selectTab(name)
 		btn.TextColor3 = active and Color3.new(1, 1, 1) or Color3.fromRGB(130, 130, 150)
 		-- animate indicator to active tab
 		if active then
-			TweenService:Create(tabIndicator, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
-				Position = UDim2.new(btn.Position.X.Scale, btn.Position.X.Offset, 1, 2),
-				Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset, 0, 2),
-			}):Play()
+			task.defer(function()
+				local k = menuScale.Scale
+				local x = (btn.AbsolutePosition.X - tabRow.AbsolutePosition.X) / k
+				local w = btn.AbsoluteSize.X / k
+				TweenService:Create(tabIndicator, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+					Position = UDim2.new(0, x, 0, 29),
+					Size = UDim2.new(0, w, 0, 2),
+				}):Play()
+				-- scroll the tab into view
+				local view = tabBar.AbsoluteSize.X / k
+				local cur = tabBar.CanvasPosition.X
+				local target = cur
+				if x < cur then target = x - 4
+				elseif x + w > cur + view then target = x + w - view + 4 end
+				if target ~= cur then
+					TweenService:Create(tabBar, TweenInfo.new(0.2), { CanvasPosition = Vector2.new(math.max(target, 0), 0) }):Play()
+				end
+			end)
 		end
 	end
 end
@@ -578,15 +612,15 @@ accentCallbacks[#accentCallbacks + 1] = function() selectTab(currentTab) end
 for i, name in ipairs(tabNames) do
 	local btn = Instance.new("TextButton")
 	btn.Name = name .. "Tab"
-	btn.Size = UDim2.new(1 / #tabNames, -(8 * (#tabNames - 1)) / #tabNames, 1, 0)
+	btn.Size = UDim2.new(0, 70, 1, 0)
 	btn.LayoutOrder = i
 	btn.BackgroundColor3 = kRowBg
 	btn.Text = name
 	btn.Font = Enum.Font.GothamBold
-	btn.TextSize = 12
+	btn.TextSize = 13
 	btn.TextColor3 = Color3.fromRGB(150, 150, 165)
 	btn.AutoButtonColor = false
-	btn.Parent = tabBar
+	btn.Parent = tabRow
 	addCorner(btn, 8)
 	track(btn.MouseButton1Click:Connect(function() selectTab(name) end))
 	tabButtons[name] = btn
@@ -600,6 +634,12 @@ for i, name in ipairs(tabNames) do
 	page.CanvasSize = UDim2.new(0, 0, 0, 0)
 	page.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	page.ClipsDescendants = true
+	page.Active = true
+	page.ScrollingEnabled = true
+	page.ScrollingDirection = Enum.ScrollingDirection.Y
+	page.ElasticBehavior = Enum.ElasticBehavior.Never
+	page.ScrollBarImageTransparency = 0.3
+	page.VerticalScrollBarInset = Enum.ScrollBarInset.Always
 	page.Visible = false
 	page.Parent = pagesHolder
 	bindAccent(page, "ScrollBarImageColor3")
@@ -957,6 +997,8 @@ local function openMenu()
 			Size = UDim2.new(0, 150, 0, 3),
 		}):Play()
 	end)
+	-- re-place the tab indicator now that the menu has real size
+	task.delay(kTweenTime + 0.05, function() selectTab(currentTab) end)
 end
 
 local function closeMenu()
@@ -2903,6 +2945,314 @@ do
 end
 
 ----------------------------------------------------------------
+-- EXTRA TAB
+----------------------------------------------------------------
+local extraPage = pages.Extra
+
+makeSection("MOVEMENT", 0, extraPage)
+
+-- BUNNY HOP (hold Space)
+do
+	local conn
+	local function setBhop(on)
+		disconnect(conn)
+		conn = nil
+		if not on then return end
+		conn = RunService.Heartbeat:Connect(function()
+			if UserInputService:GetFocusedTextBox() then return end
+			if not UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+			local hum = getHumanoid()
+			if hum and hum.FloorMaterial ~= Enum.Material.Air then
+				hum:ChangeState(Enum.HumanoidStateType.Jumping)
+			end
+		end)
+	end
+	makeToggleRow({
+		name = "Bunny Hop", desc = "Hold Space to keep jumping",
+		key = "bhop", color = Color3.fromRGB(90, 230, 150), order = 1, parent = extraPage, callback = setBhop,
+	})
+end
+
+-- FLOAT / AIR WALK (Ctrl lowers you)
+do
+	local conn, plat
+	local offset = 0
+	local function setFloat(on)
+		disconnect(conn)
+		conn = nil
+		if plat then plat:Destroy() plat = nil end
+		offset = 0
+		if not on then return end
+		plat = Instance.new("Part")
+		plat.Name = "GhostedFloat"
+		plat.Size = Vector3.new(8, 1, 8)
+		plat.Anchored = true
+		plat.CanCollide = true
+		plat.Transparency = 1
+		plat.Parent = workspace
+		conn = RunService.Heartbeat:Connect(function()
+			local char = player.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if not (hrp and hum and plat) then return end
+			if not UserInputService:GetFocusedTextBox() then
+				if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then offset = offset - 0.25 end
+			end
+			local y = hrp.Position.Y - (hum.HipHeight + hrp.Size.Y / 2 + 0.5)
+			plat.CFrame = CFrame.new(hrp.Position.X, y + offset, hrp.Position.Z)
+			if offset < 0 then offset = math.min(0, offset + 0.1) end
+		end)
+	end
+	onUnload(function() if plat then plat:Destroy() end end)
+	makeToggleRow({
+		name = "Air Walk", desc = "Invisible platform under your feet",
+		key = "float", color = Color3.fromRGB(130, 200, 255), order = 2, parent = extraPage, callback = setFloat,
+	})
+end
+
+-- SPIN
+do
+	local conn
+	local spinSpeed = 20
+	local function setSpin(on)
+		disconnect(conn)
+		conn = nil
+		if not on then return end
+		conn = RunService.Heartbeat:Connect(function()
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then hrp.CFrame = hrp.CFrame * CFrame.Angles(0, math.rad(spinSpeed), 0) end
+		end)
+	end
+	makeToggleRow({
+		name = "Spin", desc = "Rotate your character",
+		key = "spin", color = Color3.fromRGB(255, 150, 200), order = 3, parent = extraPage, callback = setSpin,
+	})
+	makeSliderRow({
+		name = "Spin Speed", key = "spinSpeed", min = 1, max = 60, default = 20,
+		order = 4, parent = extraPage, callback = function(v) spinSpeed = v end,
+	})
+end
+
+-- NO RAGDOLL / ANTI-TRIP
+do
+	local conn
+	local states = {
+		Enum.HumanoidStateType.FallingDown,
+		Enum.HumanoidStateType.Ragdoll,
+	}
+	local function setStates(enabled)
+		local hum = getHumanoid()
+		if hum then
+			for _, s in ipairs(states) do pcall(function() hum:SetStateEnabled(s, enabled) end) end
+		end
+	end
+	local function setNoRagdoll(on)
+		disconnect(conn)
+		conn = nil
+		if on then
+			conn = RunService.Heartbeat:Connect(function() setStates(false) end)
+		else
+			setStates(true)
+		end
+	end
+	makeToggleRow({
+		name = "No Ragdoll", desc = "Disables falling-down / ragdoll states",
+		key = "noragdoll", color = Color3.fromRGB(255, 200, 90), order = 5, parent = extraPage, callback = setNoRagdoll,
+	})
+end
+
+-- ANTI-FLING (makes other players' bodies non-collidable for you)
+do
+	local conn
+	local touched = setmetatable({}, { __mode = "k" })
+	local function setAntiFling(on)
+		disconnect(conn)
+		conn = nil
+		if on then
+			conn = RunService.Stepped:Connect(function()
+				for _, plr in ipairs(Players:GetPlayers()) do
+					if plr ~= player and plr.Character then
+						for _, part in ipairs(plr.Character:GetDescendants()) do
+							if part:IsA("BasePart") and part.CanCollide then
+								touched[part] = true
+								part.CanCollide = false
+							end
+						end
+					end
+				end
+			end)
+		else
+			for part in pairs(touched) do
+				if part.Parent then pcall(function() part.CanCollide = true end) end
+				touched[part] = nil
+			end
+		end
+	end
+	makeToggleRow({
+		name = "Anti-Fling", desc = "Other players can't push or fling you",
+		key = "antifling", color = Color3.fromRGB(90, 200, 255), order = 6, parent = extraPage, callback = setAntiFling,
+	})
+end
+
+-- RESPAWN WHERE YOU DIED
+do
+	local on_ = false
+	local conn
+	local lastCF
+	local function setRespawnHere(on)
+		on_ = on
+		disconnect(conn)
+		conn = nil
+		lastCF = nil
+		if not on then return end
+		conn = RunService.Heartbeat:Connect(function()
+			local char = player.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if hrp and hum and hum.Health > 0 then lastCF = hrp.CFrame end
+		end)
+	end
+	track(player.CharacterAdded:Connect(function(char)
+		if not (on_ and lastCF) then return end
+		local target = lastCF
+		local hrp = char:WaitForChild("HumanoidRootPart", 5)
+		if hrp then
+			task.wait(0.15)
+			hrp.CFrame = target
+		end
+	end))
+	makeToggleRow({
+		name = "Respawn Here", desc = "Respawn at the spot you died",
+		key = "respawnhere", color = Color3.fromRGB(180, 130, 255), order = 7, parent = extraPage, callback = setRespawnHere,
+	})
+end
+
+----------------------------------------------------------------
+makeSection("UTILITY", 10, extraPage)
+
+-- AUTO CLICKER
+do
+	local conn
+	local cps = 10
+	local acc = 0
+	local function setAutoClick(on)
+		disconnect(conn)
+		conn = nil
+		acc = 0
+		if not on then return end
+		conn = RunService.Heartbeat:Connect(function(dt)
+			if UserInputService:GetFocusedTextBox() then return end
+			acc = acc + dt
+			local interval = 1 / cps
+			if acc < interval then return end
+			acc = 0
+			local cam = workspace.CurrentCamera
+			local vp = cam and cam.ViewportSize or Vector2.new(0, 0)
+			local ok = pcall(function()
+				local vu = game:GetService("VirtualUser")
+				vu:CaptureController()
+				vu:ClickButton1(Vector2.new(vp.X / 2, vp.Y / 2))
+			end)
+			if not ok and typeof(mouse1click) == "function" then pcall(mouse1click) end
+		end)
+	end
+	makeToggleRow({
+		name = "Auto Clicker", desc = "Clicks the screen center repeatedly",
+		key = "autoclick", color = Color3.fromRGB(255, 150, 60), order = 11, parent = extraPage, callback = setAutoClick,
+	})
+	makeSliderRow({
+		name = "Clicks Per Second", key = "clickCps", min = 1, max = 30, default = 10,
+		order = 12, parent = extraPage, callback = function(v) cps = v end,
+	})
+end
+
+-- CAMERA NOCLIP (camera passes through walls)
+do
+	local orig = player.DevCameraOcclusionMode
+	local function setCamNoclip(on)
+		pcall(function()
+			player.DevCameraOcclusionMode = on and Enum.DevCameraOcclusionMode.Invisicam or orig
+		end)
+	end
+	onUnload(function() pcall(function() player.DevCameraOcclusionMode = orig end) end)
+	makeToggleRow({
+		name = "Camera Noclip", desc = "Camera no longer snaps in front of walls",
+		key = "camnoclip", color = Color3.fromRGB(190, 190, 255), order = 13, parent = extraPage, callback = setCamNoclip,
+	})
+end
+
+-- FPS BOOST
+do
+	local saved
+	local function setFpsBoost(on)
+		if on then
+			saved = { shadows = Lighting.GlobalShadows, fx = {} }
+			Lighting.GlobalShadows = false
+			for _, v in ipairs(Lighting:GetChildren()) do
+				if v:IsA("PostEffect") then
+					saved.fx[v] = v.Enabled
+					v.Enabled = false
+				end
+			end
+			pcall(function() saved.deco = workspace.Terrain.Decoration; workspace.Terrain.Decoration = false end)
+		elseif saved then
+			Lighting.GlobalShadows = saved.shadows
+			for v, e in pairs(saved.fx) do
+				if v.Parent then pcall(function() v.Enabled = e end) end
+			end
+			if saved.deco ~= nil then pcall(function() workspace.Terrain.Decoration = saved.deco end) end
+			saved = nil
+		end
+	end
+	makeToggleRow({
+		name = "FPS Boost", desc = "Shadows, post effects and grass off",
+		key = "fpsboost", color = Color3.fromRGB(90, 230, 150), order = 14, parent = extraPage, callback = setFpsBoost,
+	})
+end
+
+----------------------------------------------------------------
+makeSection("WAYPOINTS", 20, extraPage)
+
+do
+	local points = {}
+	local idx = 0
+
+	local function hrpNow()
+		return player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	end
+
+	makeButtonRow({
+		text = "Save Waypoint", order = 21, parent = extraPage,
+		callback = function()
+			local hrp = hrpNow()
+			if not hrp then notify("No character") return end
+			points[#points + 1] = hrp.CFrame
+			idx = #points
+			notify("Saved waypoint #" .. #points)
+		end,
+	})
+	makeButtonRow({
+		text = "Next Waypoint (teleport)", order = 22, parent = extraPage,
+		callback = function()
+			if #points == 0 then notify("No waypoints saved") return end
+			local hrp = hrpNow()
+			if not hrp then notify("No character") return end
+			idx = idx % #points + 1
+			hrp.CFrame = points[idx]
+			notify("Waypoint " .. idx .. "/" .. #points)
+		end,
+	})
+	makeButtonRow({
+		text = "Clear Waypoints", order = 23, parent = extraPage, color = Color3.fromRGB(120, 40, 50),
+		callback = function()
+			points = {}
+			idx = 0
+			notify("Waypoints cleared")
+		end,
+	})
+end
+
+----------------------------------------------------------------
 -- CONFIG TAB
 ----------------------------------------------------------------
 makeSection("APPEARANCE", 0, configPage)
@@ -3090,7 +3440,7 @@ do
 	local credit = Instance.new("TextLabel")
 	credit.Size = UDim2.new(1, 0, 0, 20)
 	credit.BackgroundTransparency = 1
-	credit.Text = "Ghosted Menu - made by Dani"
+	credit.Text = "Ghosted Menu - made by Dani & elixir & hade"
 	credit.TextColor3 = kTextDim
 	credit.Font = Enum.Font.Gotham
 	credit.TextSize = 12
@@ -3165,7 +3515,7 @@ local function runSplash()
 	sub.Position = UDim2.new(0.5, 0, 0.5, titleY + 32)
 	sub.Size = UDim2.fromOffset(360, 18)
 	sub.BackgroundTransparency = 1
-	sub.Text = "made by Dani"
+	sub.Text = "made by Dani & elixir & hade"
 	sub.TextColor3 = kTextDim
 	sub.TextTransparency = 1
 	sub.Font = Enum.Font.Gotham
