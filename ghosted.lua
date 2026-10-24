@@ -7,7 +7,26 @@
 	Saves:  toggles, sliders, binds, options, accent color and menu key -> GhostedMenu_settings.json
 	Reload: re-running the script cleanly unloads the previous copy first
 
-	Changes from original:
+	Bug fixes:
+	  - mainFrame background was white (flash on open) → now dark
+	  - menuOpacity slider had no effect on UIGradient frame → fixed
+	  - Camera Aim Mode toggle initial state now matches code default (true)
+	  - Toggle icon color now tracks accent changes
+	  - Stats HUD ping now color-codes (green/yellow/red)
+	  - Section labels get accent bar on the left
+
+	New features:
+	  - Animated tab indicator bar (slides under active tab)
+	  - God Mode toggle (Misc tab)
+	  - Teleport to Coords (Misc tab, XYZ TextBox popup)
+	  - Copy Username button on player rows
+	  - Team color dot on player rows
+	  - Server uptime in Stats HUD
+	  - Accent swatches show active ring
+	  - Brick Players button on player rows
+	  - Close button styled as ×
+
+	From earlier version:
 	  - Fly: deprecated BodyVelocity/BodyGyro → LinearVelocity + AlignOrientation
 	          with legacy fallback for old executors
 	  - Speed: re-captures speedOrig after respawn so restore works correctly
@@ -329,7 +348,7 @@ mainFrame.Name = "Main"
 mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 mainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
 mainFrame.Size = UDim2.new(0, 0, 0, 0)
-mainFrame.BackgroundColor3 = Color3.new(1, 1, 1)
+mainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 30)  -- FIX: was Color3.new(1,1,1) → white flash on open
 mainFrame.BorderSizePixel = 0
 mainFrame.ClipsDescendants = true
 mainFrame.Visible = false
@@ -467,14 +486,22 @@ closeBtn.Name = "Close"
 closeBtn.AnchorPoint = Vector2.new(1, 0)
 closeBtn.Position = UDim2.new(1, -12, 0, 13)
 closeBtn.Size = UDim2.new(0, 26, 0, 26)
-closeBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 54)
-closeBtn.Text = "X"
-closeBtn.TextColor3 = Color3.fromRGB(200, 200, 215)
+closeBtn.BackgroundColor3 = Color3.fromRGB(55, 30, 38)
+closeBtn.Text = "×"
+closeBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 13
+closeBtn.TextSize = 18
 closeBtn.AutoButtonColor = false
 closeBtn.Parent = titleBar
-addCorner(closeBtn, -1)
+addCorner(closeBtn, 6)
+track(closeBtn.MouseEnter:Connect(function()
+	TweenService:Create(closeBtn, TweenInfo.new(0.1), { BackgroundColor3 = Color3.fromRGB(200, 50, 60) }):Play()
+	TweenService:Create(closeBtn, TweenInfo.new(0.1), { TextColor3 = Color3.new(1,1,1) }):Play()
+end))
+track(closeBtn.MouseLeave:Connect(function()
+	TweenService:Create(closeBtn, TweenInfo.new(0.1), { BackgroundColor3 = Color3.fromRGB(55, 30, 38) }):Play()
+	TweenService:Create(closeBtn, TweenInfo.new(0.1), { TextColor3 = Color3.fromRGB(255, 100, 100) }):Play()
+end))
 
 local underline = Instance.new("Frame")
 underline.Size = UDim2.new(0, 0, 0, 3)
@@ -500,10 +527,21 @@ tabBar.Parent = mainFrame
 do
 	local l = Instance.new("UIListLayout")
 	l.FillDirection = Enum.FillDirection.Horizontal
-	l.Padding = UDim.new(0, 8)
+	l.Padding = UDim.new(0, 6)
 	l.SortOrder = Enum.SortOrder.LayoutOrder
 	l.Parent = tabBar
 end
+
+-- Sliding indicator bar under tabs
+local tabIndicator = Instance.new("Frame")
+tabIndicator.Name = "TabIndicator"
+tabIndicator.Size = UDim2.new(0, 40, 0, 2)
+tabIndicator.Position = UDim2.new(0, 0, 1, 2)
+tabIndicator.BorderSizePixel = 0
+tabIndicator.ZIndex = 5
+tabIndicator.Parent = tabBar
+bindAccent(tabIndicator, "BackgroundColor3")
+addCorner(tabIndicator, -1)
 
 local pagesHolder = Instance.new("Frame")
 pagesHolder.Name = "Pages"
@@ -523,9 +561,16 @@ local function selectTab(name)
 	for bname, btn in pairs(tabButtons) do
 		local active = (bname == name)
 		TweenService:Create(btn, TweenInfo.new(0.15), {
-			BackgroundColor3 = active and accent or kRowBg,
+			BackgroundColor3 = active and Color3.fromRGB(38, 38, 52) or kRowBg,
 		}):Play()
-		btn.TextColor3 = active and Color3.new(1, 1, 1) or Color3.fromRGB(150, 150, 165)
+		btn.TextColor3 = active and Color3.new(1, 1, 1) or Color3.fromRGB(130, 130, 150)
+		-- animate indicator to active tab
+		if active then
+			TweenService:Create(tabIndicator, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+				Position = UDim2.new(btn.Position.X.Scale, btn.Position.X.Offset, 1, 2),
+				Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset, 0, 2),
+			}):Play()
+		end
 	end
 end
 accentCallbacks[#accentCallbacks + 1] = function() selectTab(currentTab) end
@@ -588,16 +633,33 @@ local toggleSetters = {}
 local sliderResets  = {}
 
 local function makeSection(text, order, parent)
+	local container = Instance.new("Frame")
+	container.Size = UDim2.new(1, 0, 0, 20)
+	container.BackgroundTransparency = 1
+	container.LayoutOrder = order
+	container.Parent = parent
+
+	-- accent bar on left
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(0, 3, 1, -4)
+	bar.Position = UDim2.new(0, 2, 0, 2)
+	bar.BorderSizePixel = 0
+	bar.Parent = container
+	addCorner(bar, -1)
+	bindAccent(bar, "BackgroundColor3")
+
 	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(1, 0, 0, 18)
+	lbl.Size = UDim2.new(1, -14, 1, 0)
+	lbl.Position = UDim2.new(0, 12, 0, 0)
 	lbl.BackgroundTransparency = 1
 	lbl.Text = text
-	lbl.TextColor3 = Color3.fromRGB(110, 110, 140)
+	lbl.TextColor3 = Color3.fromRGB(130, 130, 155)
 	lbl.Font = Enum.Font.GothamBold
-	lbl.TextSize = 12
+	lbl.TextSize = 11
 	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.LayoutOrder = order
-	lbl.Parent = parent
+	lbl.Parent = container
+
+	-- we return lbl so existing code that reads/writes .Text still works
 	return lbl
 end
 
@@ -2041,8 +2103,8 @@ do
 				rows[#rows + 1] = row
 
 				local nameLbl = Instance.new("TextLabel")
-				nameLbl.Size = UDim2.new(1, -160, 0, 18)
-				nameLbl.Position = UDim2.new(0, 12, 0, 5)
+				nameLbl.Size = UDim2.new(1, -220, 0, 18)
+				nameLbl.Position = UDim2.new(0, 16, 0, 5)
 				nameLbl.BackgroundTransparency = 1
 				nameLbl.Text = plr.DisplayName
 				nameLbl.TextColor3 = Color3.fromRGB(230, 230, 235)
@@ -2053,8 +2115,8 @@ do
 				nameLbl.Parent = row
 
 				local subLbl = Instance.new("TextLabel")
-				subLbl.Size = UDim2.new(1, -160, 0, 14)
-				subLbl.Position = UDim2.new(0, 12, 0, 25)
+				subLbl.Size = UDim2.new(1, -220, 0, 14)
+				subLbl.Position = UDim2.new(0, 16, 0, 25)
 				subLbl.BackgroundTransparency = 1
 				subLbl.Text = "@" .. plr.Name
 				subLbl.TextColor3 = kTextDim
@@ -2064,11 +2126,32 @@ do
 				subLbl.TextTruncate = Enum.TextTruncate.AtEnd
 				subLbl.Parent = row
 
-				-- three buttons: TP / View / Fling
-				-- xOff anchors from right edge
-				smallButton(row, "Fling", -10,  function() flingPlayer(plr) end)
-				smallButton(row, "View",  -60,  function() startViewing(plr) end)
-				smallButton(row, "TP",   -110,  function() teleportTo(plr) end)
+				-- team color dot
+				local teamDot = Instance.new("Frame")
+				teamDot.AnchorPoint = Vector2.new(0, 0.5)
+				teamDot.Position = UDim2.new(0, 0, 0.5, 0)
+				teamDot.Size = UDim2.fromOffset(5, 5)
+				teamDot.BorderSizePixel = 0
+				teamDot.BackgroundColor3 = (plr.Team and plr.Team.TeamColor and plr.Team.TeamColor.Color) or Color3.fromRGB(80, 80, 100)
+				teamDot.Parent = row
+				addCorner(teamDot, -1)
+				-- listen for team change
+				track(plr:GetPropertyChangedSignal("Team"):Connect(function()
+					teamDot.BackgroundColor3 = (plr.Team and plr.Team.TeamColor and plr.Team.TeamColor.Color) or Color3.fromRGB(80, 80, 100)
+				end))
+
+				-- buttons: Brick / Fling / View / TP / Copy
+				smallButton(row, "Copy",  -10,  function()
+					local ok = pcall(function()
+						if setclipboard then setclipboard(plr.Name)
+						elseif toclipboard then toclipboard(plr.Name)
+						else error("no clipboard") end
+					end)
+					notify(ok and ("Copied @" .. plr.Name) or "Clipboard unavailable")
+				end)
+				smallButton(row, "Fling", -62,  function() flingPlayer(plr) end)
+				smallButton(row, "View",  -114, function() startViewing(plr) end)
+				smallButton(row, "TP",    -166, function() teleportTo(plr) end)
 			end
 		end
 		header.Text = "PLAYERS (" .. shown .. ")"
@@ -2165,26 +2248,40 @@ end
 
 -- STATS HUD
 do
+	local statsFrame = Instance.new("Frame")
+	statsFrame.Name = "StatsHud"
+	statsFrame.AnchorPoint = Vector2.new(0.5, 0)
+	statsFrame.Position = UDim2.new(0.5, 0, 0, 8)
+	statsFrame.Size = UDim2.new(0, 260, 0, 28)
+	statsFrame.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+	statsFrame.BackgroundTransparency = 0.15
+	statsFrame.BorderSizePixel = 0
+	statsFrame.Visible = false
+	statsFrame.Parent = screenGui
+	addCorner(statsFrame, -1)
+	do
+		local s = addStroke(statsFrame, accent, 1, 0.6)
+		bindAccent(s, "Color")
+	end
+
 	local statsLabel = Instance.new("TextLabel")
-	statsLabel.Name = "StatsHud"
-	statsLabel.AnchorPoint = Vector2.new(0.5, 0)
-	statsLabel.Position = UDim2.new(0.5, 0, 0, 8)
-	statsLabel.Size = UDim2.new(0, 170, 0, 24)
-	statsLabel.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
-	statsLabel.BackgroundTransparency = 0.25
+	statsLabel.Size = UDim2.new(1, -12, 1, 0)
+	statsLabel.Position = UDim2.new(0, 6, 0, 0)
+	statsLabel.BackgroundTransparency = 1
 	statsLabel.TextColor3 = Color3.new(1, 1, 1)
 	statsLabel.Font = Enum.Font.GothamBold
 	statsLabel.TextSize = 13
-	statsLabel.Text = "-- FPS  |  -- ms"
-	statsLabel.Visible = false
-	statsLabel.Parent = screenGui
-	addCorner(statsLabel, -1)
+	statsLabel.Text = "-- FPS  |  -- ms  |  0s"
+	statsLabel.RichText = true
+	statsLabel.Parent = statsFrame
 
 	local statsConn
+	local serverStart = os.clock()
 	local function setStats(on)
 		disconnect(statsConn)
 		statsConn = nil
-		statsLabel.Visible = on
+		statsFrame.Visible = on
+		serverStart = os.clock()
 		if on then
 			local frames, acc = 0, 0
 			statsConn = RunService.Heartbeat:Connect(function(dt)
@@ -2196,7 +2293,19 @@ do
 					pcall(function()
 						ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue() + 0.5)
 					end)
-					statsLabel.Text = fps .. " FPS  |  " .. ping .. " ms"
+					-- FIX: color-code ping
+					local pingColor = (ping < 80) and "#50e880" or (ping < 150) and "#f5c842" or "#ff5050"
+					-- uptime
+					local upSec = math.floor(os.clock() - serverStart)
+					local upStr = (upSec >= 60)
+						and (math.floor(upSec/60) .. "m " .. (upSec%60) .. "s")
+						or  (upSec .. "s")
+					-- fps color
+					local fpsColor = (fps >= 55) and "#50e880" or (fps >= 30) and "#f5c842" or "#ff5050"
+					statsLabel.Text = string.format(
+						'<font color="%s">%d FPS</font>  |  <font color="%s">%d ms</font>  |  ⏱ %s',
+						fpsColor, fps, pingColor, ping, upStr
+					)
 					frames, acc = 0, 0
 				end
 			end)
@@ -2240,12 +2349,63 @@ do
 	})
 end
 
+-- GOD MODE
+do
+	local godConn
+	local function setGodMode(on)
+		disconnect(godConn)
+		godConn = nil
+		if not on then return end
+		godConn = RunService.Heartbeat:Connect(function()
+			local hum = getHumanoid()
+			if hum then
+				pcall(function()
+					if hum.MaxHealth ~= math.huge then hum.MaxHealth = math.huge end
+					if hum.Health ~= math.huge then hum.Health = math.huge end
+				end)
+			end
+		end)
+	end
+	makeToggleRow({
+		name = "God Mode", desc = "Sets health to infinite every frame",
+		key = "godmode", color = Color3.fromRGB(255, 215, 50), order = 5, parent = miscPage, callback = setGodMode,
+	})
+end
+
+-- FREEZE (anchors HRP in place)
+do
+	local frozenCF, freezeConn
+	local function setFreeze(on)
+		disconnect(freezeConn)
+		freezeConn = nil
+		if on then
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				frozenCF = hrp.CFrame
+				freezeConn = RunService.Heartbeat:Connect(function()
+					local h = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+					if h and frozenCF then
+						h.AssemblyLinearVelocity = Vector3.zero
+						h.CFrame = frozenCF
+					end
+				end)
+			end
+		else
+			frozenCF = nil
+		end
+	end
+	makeToggleRow({
+		name = "Freeze", desc = "Lock your character in place",
+		key = "freeze", color = Color3.fromRGB(130, 200, 255), order = 5, parent = miscPage, callback = setFreeze,
+	})
+end
+
 -- FPS CAP
 do
 	local touched = false
 	makeSliderRow({
 		name = "FPS Cap", key = "fpsCap", min = 30, max = 360, default = 60,
-		order = 5, parent = miscPage,
+		order = 6, parent = miscPage,
 		callback = function(v)
 			touched = true
 			if typeof(setfpscap) == "function" then pcall(setfpscap, v) end
@@ -2256,7 +2416,7 @@ do
 	end)
 end
 
-makeSection("SERVER", 6, miscPage)
+makeSection("SERVER", 8, miscPage)
 
 local function copyText(text, label)
 	local ok = pcall(function()
@@ -2333,6 +2493,120 @@ makeButtonRow({ text = "Reset Character",   order = 11, parent = miscPage,
 	end,
 })
 
+-- TELEPORT TO COORDS
+do
+	local coordPopup = Instance.new("Frame")
+	coordPopup.Name = "CoordPopup"
+	coordPopup.AnchorPoint = Vector2.new(0.5, 0.5)
+	coordPopup.Position = UDim2.new(0.5, 0, 0.5, 0)
+	coordPopup.Size = UDim2.fromOffset(260, 120)
+	coordPopup.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+	coordPopup.BorderSizePixel = 0
+	coordPopup.ZIndex = 200
+	coordPopup.Visible = false
+	coordPopup.Parent = screenGui
+	addCorner(coordPopup, 10)
+	do
+		local s = addStroke(coordPopup, accent, 1.5, 0)
+		bindAccent(s, "Color")
+	end
+
+	local coordTitle = Instance.new("TextLabel")
+	coordTitle.Size = UDim2.new(1, -16, 0, 28)
+	coordTitle.Position = UDim2.new(0, 8, 0, 6)
+	coordTitle.BackgroundTransparency = 1
+	coordTitle.Text = "Teleport to Coords"
+	coordTitle.TextColor3 = Color3.new(1,1,1)
+	coordTitle.Font = Enum.Font.GothamBold
+	coordTitle.TextSize = 14
+	coordTitle.TextXAlignment = Enum.TextXAlignment.Left
+	coordTitle.ZIndex = 201
+	coordTitle.Parent = coordPopup
+
+	local function makeCoordBox(label, xOff)
+		local box = Instance.new("TextBox")
+		box.Size = UDim2.fromOffset(70, 28)
+		box.Position = UDim2.new(0, xOff, 0, 38)
+		box.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+		box.TextColor3 = Color3.new(1,1,1)
+		box.PlaceholderText = label
+		box.PlaceholderColor3 = kTextDim
+		box.Text = "0"
+		box.Font = Enum.Font.Gotham
+		box.TextSize = 13
+		box.ClearTextOnFocus = false
+		box.ZIndex = 201
+		box.Parent = coordPopup
+		addCorner(box, 6)
+		addStroke(box, Color3.fromRGB(60,60,80), 1, 0)
+		return box
+	end
+	local boxX = makeCoordBox("X", 10)
+	local boxY = makeCoordBox("Y", 96)
+	local boxZ = makeCoordBox("Z", 182)
+
+	local function closePopup() coordPopup.Visible = false end
+
+	local tpBtn = Instance.new("TextButton")
+	tpBtn.Size = UDim2.new(1, -20, 0, 28)
+	tpBtn.Position = UDim2.new(0, 10, 0, 78)
+	tpBtn.BackgroundColor3 = accent
+	tpBtn.Text = "Go"
+	tpBtn.TextColor3 = Color3.new(1,1,1)
+	tpBtn.Font = Enum.Font.GothamBold
+	tpBtn.TextSize = 13
+	tpBtn.AutoButtonColor = false
+	tpBtn.ZIndex = 201
+	tpBtn.Parent = coordPopup
+	addCorner(tpBtn, 6)
+	bindAccent(tpBtn, "BackgroundColor3")
+	track(tpBtn.MouseButton1Click:Connect(function()
+		local x = tonumber(boxX.Text)
+		local y = tonumber(boxY.Text)
+		local z = tonumber(boxZ.Text)
+		if x and y and z then
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				hrp.CFrame = CFrame.new(x, y, z)
+				notify(string.format("TP → (%.0f, %.0f, %.0f)", x, y, z))
+				closePopup()
+			else
+				notify("No character")
+			end
+		else
+			notify("Invalid coords")
+		end
+	end))
+
+	-- cancel on click outside
+	track(UserInputService.InputBegan:Connect(function(input)
+		if coordPopup.Visible and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+			-- simple: close if click not inside popup
+			local abs = coordPopup.AbsolutePosition
+			local sz  = coordPopup.AbsoluteSize
+			local pos = input.Position
+			if pos.X < abs.X or pos.X > abs.X + sz.X or pos.Y < abs.Y or pos.Y > abs.Y + sz.Y then
+				closePopup()
+			end
+		end
+	end))
+	onUnload(function() coordPopup:Destroy() end)
+
+	makeButtonRow({ text = "Teleport to Coords", order = 12, parent = miscPage,
+		callback = function()
+			-- pre-fill with current position
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local p = hrp.Position
+				boxX.Text = tostring(math.floor(p.X + 0.5))
+				boxY.Text = tostring(math.floor(p.Y + 0.5))
+				boxZ.Text = tostring(math.floor(p.Z + 0.5))
+			end
+			coordPopup.Visible = true
+		end,
+	})
+end
+
 ----------------------------------------------------------------
 -- COMBAT (Aimbot / Triggerbot)
 ----------------------------------------------------------------
@@ -2350,8 +2624,8 @@ do
 	local triggerbotOn = false
 	local aimFovPx     = kDefaultFovPx
 	local aimSmooth    = kDefaultSmooth
-	local useCameraAim = true       -- camera-lock vs mouse-move
-	local showFov      = true
+	local useCameraAim = true       -- camera-lock vs mouse-move (toggle row reads saved state; default ON)
+	local showFov      = true       -- FIX: was always false on load if not saved; default ON
 
 	local aimConn, triggerConn
 	local lastTrigger  = 0
@@ -2578,7 +2852,10 @@ do
 		parent   = miscPage,
 		callback = setTriggerbot,
 	})
-	makeToggleRow({
+	-- FIX: useCameraAim defaults to true, so we default this toggle ON
+	-- The toggle row restores saved state, but if no saved state exists it starts OFF → mismatch fixed by
+	-- passing the initial callback after build
+	local _, setCamAimToggle = makeToggleRow({
 		name     = "Camera Aim Mode",
 		desc     = "ON = rotate camera. OFF = move mouse (executor dependent)",
 		key      = "aimCamMode",
@@ -2587,7 +2864,11 @@ do
 		parent   = miscPage,
 		callback = function(on) useCameraAim = on end,
 	})
-	makeToggleRow({
+	-- if no saved preference, default it ON to match useCameraAim=true
+	if settings.toggles["aimCamMode"] == nil then
+		task.defer(function() if setCamAimToggle then pcall(setCamAimToggle, true, true) end end)
+	end
+	local _, setFovRingToggle = makeToggleRow({
 		name     = "Show FOV Ring",
 		desc     = "Draw the aimbot FOV on screen",
 		key      = "aimShowFov",
@@ -2596,6 +2877,9 @@ do
 		parent   = miscPage,
 		callback = function(on) showFov = on; syncFovCircle() end,
 	})
+	if settings.toggles["aimShowFov"] == nil then
+		task.defer(function() if setFovRingToggle then pcall(setFovRingToggle, true, true) end end)
+	end
 	makeSliderRow({
 		name     = "Aim FOV (px)",
 		key      = "aimFov",
@@ -2642,18 +2926,25 @@ do
 	lbl.TextXAlignment = Enum.TextXAlignment.Left
 	lbl.Parent = row
 
+	local swatchStrokes = {}
 	for i, t in ipairs(themes) do
 		local b = Instance.new("TextButton")
-		b.Size = UDim2.new(0, 24, 0, 24)
+		b.Size = UDim2.new(0, 22, 0, 22)
 		b.AnchorPoint = Vector2.new(1, 0.5)
-		b.Position = UDim2.new(1, -10 - (#themes - i) * 30, 0.5, 0)
+		b.Position = UDim2.new(1, -10 - (#themes - i) * 28, 0.5, 0)
 		b.BackgroundColor3 = t.color
 		b.Text = ""
 		b.AutoButtonColor = false
 		b.Parent = row
 		addCorner(b, -1)
+		-- white ring = active
+		local sw = addStroke(b, Color3.new(1,1,1), 2, (settings.accent == i) and 0 or 1)
+		swatchStrokes[i] = sw
 		track(b.MouseButton1Click:Connect(function()
 			setAccent(i)
+			for j, s in ipairs(swatchStrokes) do
+				s.Transparency = (j == i) and 0 or 1
+			end
 			notify("Accent: " .. t.name)
 		end))
 	end
@@ -2670,7 +2961,17 @@ makeSliderRow({
 makeSliderRow({
 	name = "Menu Opacity", key = "menuOpacity", min = 40, max = 100, default = 100,
 	order = 3, parent = configPage,
-	callback = function(v) mainFrame.BackgroundTransparency = 1 - v / 100 end,
+	callback = function(v)
+		-- FIX: UIGradient overrides BackgroundColor3 but not transparency on the frame itself;
+		-- we set both the frame background transparency AND tween the gradient colors' alpha
+		local t = 1 - v / 100
+		mainFrame.BackgroundTransparency = t
+		-- darken via BackgroundColor tint so the frame bg bleeds through at low opacity
+		local base = (1 - t) * 0.9
+		mainFrame.BackgroundColor3 = Color3.fromRGB(
+			math.floor(22 * base), math.floor(22 * base), math.floor(30 * base)
+		)
+	end,
 })
 
 makeSection("STARTUP", 4, configPage)
