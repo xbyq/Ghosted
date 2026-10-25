@@ -436,7 +436,7 @@ creditLabel.Name = "Credit"
 creditLabel.Size = UDim2.new(1, -140, 0, 16)
 creditLabel.Position = UDim2.new(0, 12, 0, 32)
 creditLabel.BackgroundTransparency = 1
-creditLabel.Text = "made by Dani & elixir & hade & elixir & hade"
+creditLabel.Text = "made by Dani & Elixir & Hade"
 creditLabel.TextColor3 = kTextDim
 creditLabel.Font = Enum.Font.Gotham
 creditLabel.TextSize = 13
@@ -1122,53 +1122,92 @@ local origFov = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView
 ----------------------------------------------------------------
 local flingPower = kDefaultFlingPower
 
--- Tries LinearVelocity first (engine ≥ 604), falls back to BodyVelocity
+-- Why the old version did nothing: it only changed the target's physics on YOUR
+-- client, and other players' characters are simulated by their own owner, so it
+-- never replicated. This version uses your own character as the projectile:
+-- it spins you at huge speed, glues you onto the target for a moment so the
+-- collision flings them, then puts you back where you started.
+local flinging = false
+local flingConn
+
 local function flingPlayer(plr)
+	if flinging then notify("Already flinging") return end
+
+	local char = player.Character
+	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+	local hum  = char and char:FindFirstChildOfClass("Humanoid")
 	local tChar = plr.Character
 	local tHrp  = tChar and tChar:FindFirstChild("HumanoidRootPart")
-	if not tHrp then notify("No character to fling") return end
-
-	-- direction: away from our hrp, biased upward
-	local myHrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-	local dir
-	if myHrp then
-		local d = (tHrp.Position - myHrp.Position)
-		dir = (d.Magnitude > 0.1 and d.Unit or Vector3.new(0, 1, 0)) + Vector3.new(0, 0.4, 0)
-		dir = dir.Unit
-	else
-		dir = Vector3.new(0, 1, 0)
+	local tHum  = tChar and tChar:FindFirstChildOfClass("Humanoid")
+	if not (hrp and hum and tHrp and tHum) or hum.Health <= 0 then
+		notify("No character to fling")
+		return
 	end
 
-	-- try LinearVelocity (newer API, cleaner)
-	local usedNew = pcall(function()
-		local att = Instance.new("Attachment")
-		att.Parent = tHrp
+	flinging = true
+	local origCF = hrp.CFrame
+	local camera = workspace.CurrentCamera
+	local oldSubject = camera and camera.CameraSubject
+	local t0 = os.clock()
+	local duration = 1.6
+	local power = flingPower * 20          -- slider is 500-50000
 
-		local lv = Instance.new("LinearVelocity")
-		lv.Name         = "GhostedFling"
-		lv.Attachment0  = att
-		lv.VectorVelocity = dir * flingPower
-		lv.MaxForce    = math.huge
-		lv.Parent      = tHrp
+	-- keep our own body from tripping while we spin
+	pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Seated, false) end)
 
-		task.delay(0.12, function()
-			pcall(function() lv:Destroy() end)
-			pcall(function() att:Destroy() end)
-		end)
+	-- watch the target so the camera doesn't spin with us
+	if camera and tHum then camera.CameraSubject = tHum end
+
+	local function finish()
+		disconnect(flingConn)
+		flingConn = nil
+		local c = player.Character
+		local h = c and c:FindFirstChild("HumanoidRootPart")
+		local hm = c and c:FindFirstChildOfClass("Humanoid")
+		if h then
+			-- put us back, and keep zeroing velocity for a few frames so we don't drift
+			for _ = 1, 6 do
+				h.AssemblyLinearVelocity  = Vector3.zero
+				h.AssemblyAngularVelocity = Vector3.zero
+				h.CFrame = origCF
+				RunService.Heartbeat:Wait()
+			end
+		end
+		if hm then pcall(function() hm:SetStateEnabled(Enum.HumanoidStateType.Seated, true) end) end
+		if camera and oldSubject and oldSubject.Parent then camera.CameraSubject = oldSubject
+		elseif camera and hm then camera.CameraSubject = hm end
+		flinging = false
+	end
+
+	flingConn = RunService.Heartbeat:Connect(function()
+		local c  = player.Character
+		local h  = c and c:FindFirstChild("HumanoidRootPart")
+		local th = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+		local thm = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+
+		-- stop if anything went away, the target died, or time is up
+		if not h or not th or not thm or thm.Health <= 0 or os.clock() - t0 > duration then
+			task.spawn(finish)
+			disconnect(flingConn)
+			flingConn = nil
+			return
+		end
+
+		-- stay glued to where the target is going, with a little jitter so we keep colliding
+		local lead = th.AssemblyLinearVelocity * 0.12
+		local jitter = Vector3.new(math.random(-10, 10) / 10, 0, math.random(-10, 10) / 10)
+		h.CFrame = CFrame.new(th.Position + lead + jitter) * CFrame.Angles(math.rad(math.random(0, 360)), 0, 0)
+		h.AssemblyAngularVelocity = Vector3.new(power, power, power)
+		h.AssemblyLinearVelocity  = Vector3.new(power, power * 10, power)
 	end)
 
-	if not usedNew then
-		-- legacy BodyVelocity fallback
-		local bv = Instance.new("BodyVelocity")
-		bv.Name      = "GhostedFlingBV"
-		bv.MaxForce  = Vector3.new(1e9, 1e9, 1e9)
-		bv.Velocity  = dir * flingPower
-		bv.Parent    = tHrp
-		task.delay(0.12, function() pcall(function() bv:Destroy() end) end)
-	end
-
-	notify("Flung " .. plr.DisplayName)
+	notify("Flinging " .. plr.DisplayName)
 end
+onUnload(function()
+	disconnect(flingConn)
+	flingConn = nil
+	flinging = false
+end)
 
 ----------------------------------------------------------------
 -- MOVE TAB
@@ -3440,7 +3479,7 @@ do
 	local credit = Instance.new("TextLabel")
 	credit.Size = UDim2.new(1, 0, 0, 20)
 	credit.BackgroundTransparency = 1
-	credit.Text = "Ghosted Menu - made by Dani & elixir & hade"
+	credit.Text = "Ghosted Menu - made by Dani & Elixir & Hade"
 	credit.TextColor3 = kTextDim
 	credit.Font = Enum.Font.Gotham
 	credit.TextSize = 12
@@ -3515,7 +3554,7 @@ local function runSplash()
 	sub.Position = UDim2.new(0.5, 0, 0.5, titleY + 32)
 	sub.Size = UDim2.fromOffset(360, 18)
 	sub.BackgroundTransparency = 1
-	sub.Text = "made by Dani & elixir & hade"
+	sub.Text = "made by Dani & Elixir & Hade"
 	sub.TextColor3 = kTextDim
 	sub.TextTransparency = 1
 	sub.Font = Enum.Font.Gotham
