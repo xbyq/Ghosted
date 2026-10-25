@@ -570,7 +570,7 @@ pagesHolder.Position = UDim2.new(0, 10, 0, 104)
 pagesHolder.BackgroundTransparency = 1
 pagesHolder.Parent = mainFrame
 
-local tabNames = { "Move", "Visuals", "Players", "Misc", "Extra", "Config" }
+local tabNames = { "Move", "Visuals", "Players", "Misc", "Extra", "Fun", "World", "Updates", "Config" }
 local tabButtons = {}
 local pages = {}
 local currentTab = "Move"
@@ -3289,6 +3289,678 @@ do
 			notify("Waypoints cleared")
 		end,
 	})
+end
+
+----------------------------------------------------------------
+-- FUN TAB
+----------------------------------------------------------------
+do
+	local funPage = pages.Fun
+
+	makeSection("CHARACTER", 0, funPage)
+
+	-- RAINBOW CHARACTER (local only)
+	do
+		local conn
+		local orig = setmetatable({}, { __mode = "k" })
+		local function setRainbow(on)
+			disconnect(conn)
+			conn = nil
+			if on then
+				conn = RunService.Heartbeat:Connect(function()
+					local char = player.Character
+					if not char then return end
+					local c = Color3.fromHSV((os.clock() * 0.35) % 1, 0.8, 1)
+					for _, p in ipairs(char:GetDescendants()) do
+						if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+							if orig[p] == nil then orig[p] = p.Color end
+							p.Color = c
+						end
+					end
+				end)
+			else
+				for p, c in pairs(orig) do
+					if p.Parent then pcall(function() p.Color = c end) end
+					orig[p] = nil
+				end
+			end
+		end
+		makeToggleRow({
+			name = "Rainbow Character", desc = "Cycles your colors (only you see it)",
+			key = "rainbow", color = Color3.fromRGB(255, 120, 200), order = 1, parent = funPage, callback = setRainbow,
+		})
+	end
+
+	-- GHOST MODE (local transparency)
+	do
+		local conn
+		local touched = setmetatable({}, { __mode = "k" })
+		local function setGhost(on)
+			disconnect(conn)
+			conn = nil
+			if on then
+				conn = RunService.RenderStepped:Connect(function()
+					local char = player.Character
+					if not char then return end
+					for _, p in ipairs(char:GetDescendants()) do
+						if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+							touched[p] = true
+							p.LocalTransparencyModifier = 0.7
+						end
+					end
+				end)
+			else
+				for p in pairs(touched) do
+					if p.Parent then pcall(function() p.LocalTransparencyModifier = 0 end) end
+					touched[p] = nil
+				end
+			end
+		end
+		makeToggleRow({
+			name = "See-Through Mode", desc = "Makes your own body translucent",
+			key = "seethrough", color = Color3.fromRGB(190, 190, 255), order = 2, parent = funPage, callback = setGhost,
+		})
+	end
+
+	-- SIT
+	makeToggleRow({
+		name = "Sit", desc = "Forces your character to sit",
+		key = "sitdown", color = Color3.fromRGB(255, 200, 90), order = 3, parent = funPage,
+		callback = function(on)
+			local hum = getHumanoid()
+			if hum then hum.Sit = on end
+		end,
+	})
+
+	-- TRAIL (local only)
+	do
+		local trail, a0, a1
+		local function setTrail(on)
+			if trail then trail:Destroy() trail = nil end
+			if a0 then a0:Destroy() a0 = nil end
+			if a1 then a1:Destroy() a1 = nil end
+			if not on then return end
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if not hrp then return end
+			a0 = Instance.new("Attachment")
+			a0.Position = Vector3.new(0, 1.2, 0)
+			a0.Parent = hrp
+			a1 = Instance.new("Attachment")
+			a1.Position = Vector3.new(0, -1.2, 0)
+			a1.Parent = hrp
+			trail = Instance.new("Trail")
+			trail.Attachment0 = a0
+			trail.Attachment1 = a1
+			trail.Lifetime = 0.8
+			trail.LightEmission = 1
+			trail.Color = ColorSequence.new(accent)
+			trail.Transparency = NumberSequence.new(0.1, 1)
+			trail.Parent = hrp
+		end
+		onUnload(function() setTrail(false) end)
+		makeToggleRow({
+			name = "Trail", desc = "Accent colored trail behind you",
+			key = "trail", color = Color3.fromRGB(110, 170, 255), order = 4, parent = funPage, callback = setTrail,
+		})
+	end
+
+	-- FIRST PERSON LOCK
+	makeToggleRow({
+		name = "First Person Lock", desc = "Locks the camera to first person",
+		key = "firstperson", color = Color3.fromRGB(90, 230, 150), order = 5, parent = funPage,
+		callback = function(on)
+			pcall(function()
+				player.CameraMode = on and Enum.CameraMode.LockFirstPerson or Enum.CameraMode.Classic
+			end)
+		end,
+	})
+	onUnload(function() pcall(function() player.CameraMode = Enum.CameraMode.Classic end) end)
+
+	-- CHARACTER SCALE (R15 only)
+	do
+		local names = { "BodyHeightScale", "BodyWidthScale", "BodyDepthScale", "HeadScale" }
+		local function applyScale(v)
+			local hum = getHumanoid()
+			if not hum then return end
+			for _, n in ipairs(names) do
+				local nv = hum:FindFirstChild(n)
+				if nv and nv:IsA("NumberValue") then nv.Value = v / 100 end
+			end
+		end
+		onUnload(function() applyScale(100) end)
+		makeSliderRow({
+			name = "Character Scale % (R15)", key = "charScale", min = 50, max = 200, default = 100,
+			order = 6, parent = funPage, callback = applyScale,
+		})
+	end
+
+	----------------------------------------------------------------
+	makeSection("MOVEMENT", 10, funPage)
+
+	-- SPRINT (hold Shift)
+	do
+		local conn, origSpeed
+		local sprintSpeed = 40
+		local function setSprint(on)
+			disconnect(conn)
+			conn = nil
+			local hum = getHumanoid()
+			if on then
+				if hum then origSpeed = hum.WalkSpeed end
+				conn = RunService.Heartbeat:Connect(function()
+					local h = getHumanoid()
+					if not h then return end
+					if origSpeed == nil then origSpeed = h.WalkSpeed end
+					if not UserInputService:GetFocusedTextBox() and UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+						h.WalkSpeed = sprintSpeed
+					elseif h.WalkSpeed == sprintSpeed then
+						h.WalkSpeed = origSpeed
+					end
+				end)
+			else
+				if hum and origSpeed then hum.WalkSpeed = origSpeed end
+				origSpeed = nil
+			end
+		end
+		makeToggleRow({
+			name = "Sprint", desc = "Hold Shift to run faster",
+			key = "sprint", color = Color3.fromRGB(255, 150, 90), order = 11, parent = funPage, callback = setSprint,
+		})
+		makeSliderRow({
+			name = "Sprint Speed", key = "sprintSpeed", min = 20, max = 150, default = 40,
+			order = 12, parent = funPage, callback = function(v) sprintSpeed = v end,
+		})
+	end
+
+	-- DASH (press Q)
+	do
+		local conn
+		local last = 0
+		local dashPower = 120
+		local function setDash(on)
+			disconnect(conn)
+			conn = nil
+			if not on then return end
+			conn = UserInputService.InputBegan:Connect(function(input, processed)
+				if processed or input.KeyCode ~= Enum.KeyCode.Q then return end
+				if os.clock() - last < 0.8 then return end
+				local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+				if hrp then
+					last = os.clock()
+					hrp.AssemblyLinearVelocity = hrp.CFrame.LookVector * dashPower + Vector3.new(0, 20, 0)
+				end
+			end)
+		end
+		makeToggleRow({
+			name = "Dash", desc = "Press Q to dash forward",
+			key = "dash", color = Color3.fromRGB(255, 200, 90), order = 13, parent = funPage, callback = setDash,
+		})
+		makeSliderRow({
+			name = "Dash Power", key = "dashPower", min = 50, max = 300, default = 120,
+			order = 14, parent = funPage, callback = function(v) dashPower = v end,
+		})
+	end
+end
+
+----------------------------------------------------------------
+-- WORLD TAB
+----------------------------------------------------------------
+do
+	local worldPage = pages.World
+
+	makeSection("ENVIRONMENT", 0, worldPage)
+
+	-- NO FOG
+	do
+		local saved
+		local function setNoFog(on)
+			if on then
+				saved = { FogEnd = Lighting.FogEnd, FogStart = Lighting.FogStart, atm = {} }
+				Lighting.FogEnd = 1e6
+				Lighting.FogStart = 1e6
+				for _, a in ipairs(Lighting:GetDescendants()) do
+					if a:IsA("Atmosphere") then
+						saved.atm[a] = { a.Density, a.Haze }
+						a.Density = 0
+						a.Haze = 0
+					end
+				end
+			elseif saved then
+				Lighting.FogEnd = saved.FogEnd
+				Lighting.FogStart = saved.FogStart
+				for a, v in pairs(saved.atm) do
+					if a.Parent then pcall(function() a.Density = v[1]; a.Haze = v[2] end) end
+				end
+				saved = nil
+			end
+		end
+		makeToggleRow({
+			name = "No Fog", desc = "Removes fog and atmosphere haze",
+			key = "nofog", color = Color3.fromRGB(190, 190, 255), order = 1, parent = worldPage, callback = setNoFog,
+		})
+	end
+
+	-- X-RAY
+	do
+		local list = {}
+		local token = 0
+		local function setXray(on)
+			token = token + 1
+			local mine = token
+			if on then
+				task.spawn(function()
+					local n = 0
+					for _, d in ipairs(workspace:GetDescendants()) do
+						if token ~= mine then return end
+						if d:IsA("BasePart") then
+							local m = d:FindFirstAncestorOfClass("Model")
+							if not (m and m:FindFirstChildOfClass("Humanoid")) then
+								list[#list + 1] = d
+								d.LocalTransparencyModifier = 0.6
+							end
+						end
+						n = n + 1
+						if n % 800 == 0 then task.wait() end
+					end
+				end)
+			else
+				for i = #list, 1, -1 do
+					local d = list[i]
+					if d.Parent then pcall(function() d.LocalTransparencyModifier = 0 end) end
+					list[i] = nil
+				end
+			end
+		end
+		makeToggleRow({
+			name = "X-Ray", desc = "See through the map (only you)",
+			key = "xray", color = Color3.fromRGB(110, 200, 255), order = 2, parent = worldPage, callback = setXray,
+		})
+	end
+
+	-- REMOVE PARTICLES
+	do
+		local list = {}
+		local function setParticles(on)
+			if on then
+				for _, d in ipairs(workspace:GetDescendants()) do
+					if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Smoke") or d:IsA("Fire")
+						or d:IsA("Sparkles") or d:IsA("Beam") then
+						if d.Enabled then
+							list[#list + 1] = d
+							d.Enabled = false
+						end
+					end
+				end
+			else
+				for i = #list, 1, -1 do
+					local d = list[i]
+					if d.Parent then pcall(function() d.Enabled = true end) end
+					list[i] = nil
+				end
+			end
+		end
+		makeToggleRow({
+			name = "Remove Particles", desc = "Turns off particles, fire, smoke and beams",
+			key = "noparticles", color = Color3.fromRGB(255, 150, 60), order = 3, parent = worldPage, callback = setParticles,
+		})
+	end
+
+	-- TIME CYCLE
+	do
+		local conn, savedTime
+		local speed = 10
+		local function setCycle(on)
+			disconnect(conn)
+			conn = nil
+			if on then
+				if savedTime == nil then savedTime = Lighting.ClockTime end
+				conn = RunService.RenderStepped:Connect(function(dt)
+					Lighting.ClockTime = (Lighting.ClockTime + dt * speed / 10) % 24
+				end)
+			elseif savedTime ~= nil then
+				Lighting.ClockTime = savedTime
+				savedTime = nil
+			end
+		end
+		makeToggleRow({
+			name = "Time Cycle", desc = "Day and night keep moving",
+			key = "timecycle", color = Color3.fromRGB(255, 190, 90), order = 4, parent = worldPage, callback = setCycle,
+		})
+		makeSliderRow({
+			name = "Cycle Speed", key = "cycleSpeed", min = 1, max = 100, default = 10,
+			order = 5, parent = worldPage, callback = function(v) speed = v end,
+		})
+	end
+
+	-- WORLD TINT
+	do
+		local conn, saved
+		local hue = 200
+		local function setTint(on)
+			disconnect(conn)
+			conn = nil
+			if on then
+				if not saved then saved = { Lighting.Ambient, Lighting.OutdoorAmbient } end
+				conn = RunService.RenderStepped:Connect(function()
+					local c = Color3.fromHSV(hue / 360, 0.6, 0.85)
+					Lighting.Ambient = c
+					Lighting.OutdoorAmbient = c
+				end)
+			elseif saved then
+				Lighting.Ambient = saved[1]
+				Lighting.OutdoorAmbient = saved[2]
+				saved = nil
+			end
+		end
+		makeToggleRow({
+			name = "World Tint", desc = "Tints the ambient light (pick a hue below)",
+			key = "worldtint", color = Color3.fromRGB(255, 120, 200), order = 6, parent = worldPage, callback = setTint,
+		})
+		makeSliderRow({
+			name = "Tint Hue", key = "tintHue", min = 0, max = 360, default = 200,
+			order = 7, parent = worldPage, callback = function(v) hue = v end,
+		})
+	end
+
+	----------------------------------------------------------------
+	makeSection("CAMERA", 10, worldPage)
+
+	-- HOLD TO ZOOM (Z)
+	do
+		local conn, baseFov
+		local zoomFov = 20
+		local function setZoom(on)
+			disconnect(conn)
+			conn = nil
+			local cam = workspace.CurrentCamera
+			if on then
+				baseFov = cam and cam.FieldOfView or 70
+				conn = RunService.RenderStepped:Connect(function(dt)
+					local c = workspace.CurrentCamera
+					if not c then return end
+					local zooming = not UserInputService:GetFocusedTextBox() and UserInputService:IsKeyDown(Enum.KeyCode.Z)
+					local target = zooming and zoomFov or baseFov
+					c.FieldOfView = c.FieldOfView + (target - c.FieldOfView) * math.min(1, dt * 12)
+				end)
+			elseif cam and baseFov then
+				cam.FieldOfView = baseFov
+			end
+		end
+		makeToggleRow({
+			name = "Hold Z to Zoom", desc = "Smooth zoom while Z is held",
+			key = "zoomkey", color = Color3.fromRGB(110, 170, 255), order = 11, parent = worldPage, callback = setZoom,
+		})
+		makeSliderRow({
+			name = "Zoom FOV", key = "zoomFov", min = 5, max = 60, default = 20,
+			order = 12, parent = worldPage, callback = function(v) zoomFov = v end,
+		})
+	end
+
+	-- FREECAM (PC)
+	do
+		local conn, inputConn, savedType, anchoredHrp
+		local speed = 60
+		local yaw, pitch = 0, 0
+		local pos = Vector3.zero
+
+		local function stopFree()
+			disconnect(conn)
+			disconnect(inputConn)
+			conn, inputConn = nil, nil
+			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+			local cam = workspace.CurrentCamera
+			local hum = getHumanoid()
+			if cam then
+				cam.CameraType = savedType or Enum.CameraType.Custom
+				if hum then cam.CameraSubject = hum end
+			end
+			if anchoredHrp and anchoredHrp.Parent then anchoredHrp.Anchored = false end
+			anchoredHrp = nil
+			savedType = nil
+		end
+
+		local function setFreecam(on)
+			stopFree()
+			if not on then return end
+			local cam = workspace.CurrentCamera
+			if not cam then return end
+			savedType = cam.CameraType
+			local x, y = cam.CFrame:ToOrientation()
+			pitch, yaw = x, y
+			pos = cam.CFrame.Position
+			cam.CameraType = Enum.CameraType.Scriptable
+
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				hrp.Anchored = true
+				anchoredHrp = hrp
+			end
+
+			inputConn = UserInputService.InputChanged:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseMovement
+					and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+					yaw = yaw - input.Delta.X * 0.004
+					pitch = math.clamp(pitch - input.Delta.Y * 0.004, -1.5, 1.5)
+				end
+			end)
+
+			conn = RunService.RenderStepped:Connect(function(dt)
+				local c = workspace.CurrentCamera
+				if not c then return end
+				local rotating = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+				UserInputService.MouseBehavior = rotating and Enum.MouseBehavior.LockCurrentPosition or Enum.MouseBehavior.Default
+				local rot = CFrame.fromOrientation(pitch, yaw, 0)
+				local dir = Vector3.zero
+				if not UserInputService:GetFocusedTextBox() then
+					if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + Vector3.new(0, 0, -1) end
+					if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir + Vector3.new(0, 0, 1) end
+					if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir + Vector3.new(-1, 0, 0) end
+					if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + Vector3.new(1, 0, 0) end
+					if UserInputService:IsKeyDown(Enum.KeyCode.E) then dir = dir + Vector3.new(0, 1, 0) end
+					if UserInputService:IsKeyDown(Enum.KeyCode.Q) then dir = dir + Vector3.new(0, -1, 0) end
+				end
+				local mult = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and 3 or 1
+				if dir.Magnitude > 0 then
+					pos = pos + (rot * dir.Unit) * speed * mult * dt
+				end
+				c.CFrame = CFrame.new(pos) * rot
+			end)
+		end
+
+		onUnload(stopFree)
+		makeToggleRow({
+			name = "Freecam", desc = "WASD + E/Q, hold right-mouse to look (PC)",
+			key = "freecam", color = Color3.fromRGB(90, 200, 255), order = 13, parent = worldPage, callback = setFreecam,
+		})
+		makeSliderRow({
+			name = "Freecam Speed", key = "freecamSpeed", min = 10, max = 300, default = 60,
+			order = 14, parent = worldPage, callback = function(v) speed = v end,
+		})
+	end
+
+	----------------------------------------------------------------
+	makeSection("TOOLS", 20, worldPage)
+
+	-- CLICK DELETE (Alt + click, local only)
+	do
+		local conn
+		local deleted = {}
+		local function setClickDelete(on)
+			disconnect(conn)
+			conn = nil
+			if not on then return end
+			conn = UserInputService.InputBegan:Connect(function(input, processed)
+				if processed or input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+				if not UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt) then return end
+				local t = player:GetMouse().Target
+				if not t then return end
+				local m = t:FindFirstAncestorOfClass("Model")
+				if m and m:FindFirstChildOfClass("Humanoid") then return end
+				deleted[#deleted + 1] = { part = t, parent = t.Parent }
+				t.Parent = nil
+				notify("Deleted " .. t.Name)
+			end)
+		end
+		onUnload(function()
+			for i = #deleted, 1, -1 do
+				local e = deleted[i]
+				if e.parent and e.parent.Parent then pcall(function() e.part.Parent = e.parent end) end
+				deleted[i] = nil
+			end
+		end)
+		makeToggleRow({
+			name = "Click Delete", desc = "Alt+click removes a part (only for you)",
+			key = "clickdelete", color = Color3.fromRGB(255, 100, 110), order = 21, parent = worldPage, callback = setClickDelete,
+		})
+		makeButtonRow({
+			text = "Undo Delete", order = 22, parent = worldPage,
+			callback = function()
+				local e = table.remove(deleted)
+				if not e then notify("Nothing to undo") return end
+				if e.parent and e.parent.Parent then
+					pcall(function() e.part.Parent = e.parent end)
+					notify("Restored " .. e.part.Name)
+				end
+			end,
+		})
+	end
+
+	makeButtonRow({
+		text = "Copy My Position", order = 23, parent = worldPage,
+		callback = function()
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if not hrp then notify("No character") return end
+			local p = hrp.Position
+			copyText(string.format("%.1f, %.1f, %.1f", p.X, p.Y, p.Z), "Position")
+		end,
+	})
+	makeButtonRow({
+		text = "Copy Game Link", order = 24, parent = worldPage,
+		callback = function() copyText("https://www.roblox.com/games/" .. game.PlaceId, "Game link") end,
+	})
+	makeButtonRow({
+		text = "Teleport to Spawn", order = 25, parent = worldPage,
+		callback = function()
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if not hrp then notify("No character") return end
+			for _, d in ipairs(workspace:GetDescendants()) do
+				if d:IsA("SpawnLocation") then
+					hrp.CFrame = d.CFrame + Vector3.new(0, 5, 0)
+					notify("Teleported to spawn")
+					return
+				end
+			end
+			notify("No spawn found")
+		end,
+	})
+end
+
+----------------------------------------------------------------
+-- UPDATES TAB
+----------------------------------------------------------------
+do
+	local updatesPage = pages.Updates
+	local kVersion = "1.4"
+
+	local header = makeSection("CURRENT VERSION  v" .. kVersion, 0, updatesPage)
+
+	local updates = {
+		{
+			version = "v1.4", title = "New tabs and features", latest = true,
+			items = {
+				"New Fun tab: Rainbow Character, See-Through Mode, Sit, Trail, First Person Lock, Character Scale",
+				"Fun movement: Sprint (hold Shift) and Dash (press Q) with sliders",
+				"New World tab: No Fog, X-Ray, Remove Particles, Time Cycle, World Tint",
+				"Camera tools: Hold Z to Zoom and Freecam (PC)",
+				"Tools: Click Delete (Alt+click) with Undo, Copy Position, Copy Game Link, Teleport to Spawn",
+				"New Updates tab with this changelog",
+			},
+		},
+		{
+			version = "v1.3", title = "Fling and credits",
+			items = {
+				"Fling rewritten: it now uses your own character to collide with the target, so it actually affects them",
+				"Credits now read: made by Dani & Elixir & Hade",
+			},
+		},
+		{
+			version = "v1.2", title = "Extra tab and scrolling",
+			items = {
+				"New Extra tab: Bunny Hop, Air Walk, Spin, No Ragdoll, Anti-Fling, Respawn Here",
+				"Extra utilities: Auto Clicker, Camera Noclip, FPS Boost and Waypoints",
+				"Tab bar scrolls sideways and keeps the selected tab in view",
+				"Page scrolling made more reliable",
+			},
+		},
+		{
+			version = "v1.1", title = "Fixes and polish",
+			items = {
+				"Fixed the white flash when opening the menu",
+				"Fixed the Menu Opacity slider",
+				"Fly now uses LinearVelocity with a legacy fallback",
+				"Anti-Void, Speed Boost and Camera Aim Mode fixes",
+				"Added God Mode, Teleport to Coords, team colors, ping colors and server uptime",
+			},
+		},
+		{
+			version = "v1.0", title = "First release",
+			items = {
+				"Move, Visuals, Players, Misc and Config tabs",
+				"Fly, Noclip, Speed, ESP, Chams, Aimbot, Triggerbot and more",
+				"Accent themes, keybinds and saved settings",
+			},
+		},
+	}
+
+	for idx, u in ipairs(updates) do
+		local card = Instance.new("Frame")
+		card.Size = UDim2.new(1, 0, 0, 0)
+		card.AutomaticSize = Enum.AutomaticSize.Y
+		card.BackgroundColor3 = kRowBg
+		card.LayoutOrder = idx
+		card.Parent = updatesPage
+		addCorner(card, 8)
+
+		local pad = Instance.new("UIPadding")
+		pad.PaddingTop = UDim.new(0, 10)
+		pad.PaddingBottom = UDim.new(0, 10)
+		pad.PaddingLeft = UDim.new(0, 12)
+		pad.PaddingRight = UDim.new(0, 12)
+		pad.Parent = card
+
+		local list = Instance.new("UIListLayout")
+		list.Padding = UDim.new(0, 4)
+		list.SortOrder = Enum.SortOrder.LayoutOrder
+		list.Parent = card
+
+		local title = Instance.new("TextLabel")
+		title.Size = UDim2.new(1, 0, 0, 20)
+		title.BackgroundTransparency = 1
+		title.Text = u.version .. "  -  " .. u.title .. (u.latest and "   [LATEST]" or "")
+		title.TextColor3 = Color3.new(1, 1, 1)
+		title.Font = Enum.Font.GothamBold
+		title.TextSize = 14
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.LayoutOrder = 0
+		title.Parent = card
+		if u.latest then bindAccent(title, "TextColor3") end
+
+		for i, text in ipairs(u.items) do
+			local line = Instance.new("TextLabel")
+			line.Size = UDim2.new(1, 0, 0, 0)
+			line.AutomaticSize = Enum.AutomaticSize.Y
+			line.BackgroundTransparency = 1
+			line.Text = "•  " .. text
+			line.TextColor3 = Color3.fromRGB(190, 190, 205)
+			line.Font = Enum.Font.Gotham
+			line.TextSize = 12
+			line.TextWrapped = true
+			line.TextXAlignment = Enum.TextXAlignment.Left
+			line.TextYAlignment = Enum.TextYAlignment.Top
+			line.LayoutOrder = i
+			line.Parent = card
+		end
+	end
 end
 
 ----------------------------------------------------------------
