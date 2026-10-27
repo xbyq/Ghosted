@@ -111,7 +111,7 @@ end
 ----------------------------------------------------------------
 -- SETTINGS
 ----------------------------------------------------------------
-local settings = { toggles = {}, sliders = {}, binds = {}, opts = {}, accent = 1, menuKey = "RightShift" }
+local settings = { toggles = {}, sliders = {}, binds = {}, opts = {}, accent = 1, menuKey = "RightShift", presets = {}, notes = "", places = {} }
 local canFile = typeof(readfile) == "function" and typeof(writefile) == "function" and typeof(isfile) == "function"
 
 if canFile then
@@ -128,12 +128,15 @@ if canFile then
 		if type(data.menuKey) == "string" then settings.menuKey = data.menuKey end
 		if type(data.binds)   == "table" then settings.binds   = data.binds   end
 		if type(data.opts)    == "table" then settings.opts    = data.opts    end
+		if type(data.presets) == "table" then settings.presets = data.presets end
+		if type(data.notes)   == "string" then settings.notes  = data.notes   end
+		if type(data.places)  == "table" then settings.places  = data.places  end
 	end
 end
 
 local opts = settings.opts
 do
-	local defaults = { splash = true, openOnLoad = true, notifs = true, showButton = true }
+	local defaults = { splash = true, openOnLoad = true, notifs = true, showButton = true, sounds = false }
 	for k, v in pairs(defaults) do
 		if opts[k] == nil then opts[k] = v end
 	end
@@ -397,6 +400,16 @@ bindAccent(toastStroke, "Color")
 local toastToken = 0
 local function notify(text)
 	if not opts.notifs then return end
+	if opts.sounds then
+		pcall(function()
+			local s = Instance.new("Sound")
+			s.SoundId = "rbxasset://sounds/electronicpingshort.wav"
+			s.Volume = 0.4
+			s.Parent = screenGui
+			s:Play()
+			game:GetService("Debris"):AddItem(s, 2)
+		end)
+	end
 	toastToken = toastToken + 1
 	local mine = toastToken
 	toast.Text = text
@@ -570,7 +583,7 @@ pagesHolder.Position = UDim2.new(0, 10, 0, 104)
 pagesHolder.BackgroundTransparency = 1
 pagesHolder.Parent = mainFrame
 
-local tabNames = { "Move", "Visuals", "Players", "Misc", "Extra", "Fun", "World", "Chat", "Tools", "Updates", "Config" }
+local tabNames = { "Move", "Visuals", "Players", "Misc", "Extra", "Fun", "World", "Chat", "Tools", "Combat", "Camera", "Audio", "Session", "Automation", "Teleports", "Server", "Presets", "Keybinds", "Themes", "Notes", "Credits", "Updates", "Config" }
 local tabButtons = {}
 local pages = {}
 local currentTab = "Move"
@@ -841,7 +854,7 @@ local function makeToggleRow(o)
 	track(clickBtn.MouseButton1Click:Connect(function() setState(not state) end))
 
 	if o.key and not o.opt then
-		featureToggles[o.key] = { tag = bindTag, set = setState, get = function() return state end }
+		featureToggles[o.key] = { tag = bindTag, set = setState, get = function() return state end, name = o.name }
 		refreshBindTag(o.key)
 		track(clickBtn.MouseButton2Click:Connect(function()
 			if rebinding then return end
@@ -1388,7 +1401,7 @@ do
 
 	makeToggleRow({
 		name = "Fly", desc = "Space / Ctrl, or the UP / DN buttons",
-		color = Color3.fromRGB(110, 170, 255), order = 1, parent = movePage, callback = setFly,
+		key = "fly", color = Color3.fromRGB(110, 170, 255), order = 1, parent = movePage, callback = setFly,
 	})
 	makeSliderRow({
 		name = "Fly Speed", key = "flySpeed", min = 10, max = 250, default = kDefaultFlySpeed,
@@ -4720,17 +4733,2800 @@ do
 end
 
 ----------------------------------------------------------------
+-- COMBAT TAB
+----------------------------------------------------------------
+do
+	local combatPage = pages.Combat
+
+	local function isEnemy(plr)
+		if plr == player then return false end
+		if espTeamCheck and plr.Team ~= nil and plr.Team == player.Team then return false end
+		return true
+	end
+
+	makeSection("HITBOXES", 0, combatPage)
+
+	-- HITBOX EXPANDER
+	do
+		local conn
+		local size = 8
+		local orig = setmetatable({}, { __mode = "k" })
+		local function restore()
+			for part, o in pairs(orig) do
+				if part.Parent then
+					pcall(function()
+						part.Size = o.Size
+						part.Transparency = o.Transparency
+						part.CanCollide = o.CanCollide
+					end)
+				end
+				orig[part] = nil
+			end
+		end
+		local function setHitbox(on)
+			disconnect(conn)
+			conn = nil
+			restore()
+			if not on then return end
+			conn = RunService.Heartbeat:Connect(function()
+				for _, plr in ipairs(Players:GetPlayers()) do
+					local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+					if hrp then
+						if isEnemy(plr) then
+							if not orig[hrp] then
+								orig[hrp] = { Size = hrp.Size, Transparency = hrp.Transparency, CanCollide = hrp.CanCollide }
+							end
+							hrp.Size = Vector3.new(size, size, size)
+							hrp.Transparency = 0.75
+							hrp.CanCollide = false
+						elseif orig[hrp] then
+							local o = orig[hrp]
+							hrp.Size, hrp.Transparency, hrp.CanCollide = o.Size, o.Transparency, o.CanCollide
+							orig[hrp] = nil
+						end
+					end
+				end
+			end)
+		end
+		onUnload(restore)
+		makeToggleRow({
+			name = "Hitbox Expander", desc = "Enlarges enemy root parts (client side)",
+			key = "hitbox", color = Color3.fromRGB(255, 80, 80), order = 1, parent = combatPage, callback = setHitbox,
+		})
+		makeSliderRow({
+			name = "Hitbox Size", key = "hitboxSize", min = 3, max = 30, default = 8,
+			order = 2, parent = combatPage, callback = function(v) size = v end,
+		})
+	end
+
+	----------------------------------------------------------------
+	makeSection("AUTOMATION", 5, combatPage)
+
+	-- AUTO ATTACK (equipped tool)
+	do
+		local conn
+		local range = 12
+		local function setAuto(on)
+			disconnect(conn)
+			conn = nil
+			if not on then return end
+			local acc = 0
+			conn = RunService.Heartbeat:Connect(function(dt)
+				acc = acc + dt
+				if acc < 0.1 then return end
+				acc = 0
+				local char = player.Character
+				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+				local tool = char and char:FindFirstChildOfClass("Tool")
+				if not (hrp and tool) then return end
+				for _, plr in ipairs(Players:GetPlayers()) do
+					if isEnemy(plr) then
+						local th = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+						local thm = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+						if th and thm and thm.Health > 0 and (th.Position - hrp.Position).Magnitude <= range then
+							pcall(function() tool:Activate() end)
+							break
+						end
+					end
+				end
+			end)
+		end
+		makeToggleRow({
+			name = "Auto Attack", desc = "Swings your equipped tool when someone is close",
+			key = "autoattack", color = Color3.fromRGB(255, 150, 60), order = 6, parent = combatPage, callback = setAuto,
+		})
+		makeSliderRow({
+			name = "Attack Range", key = "attackRange", min = 4, max = 40, default = 12,
+			order = 7, parent = combatPage, callback = function(v) range = v end,
+		})
+	end
+
+	-- LOW HEALTH ALERT
+	do
+		local conn
+		local threshold = 30
+		local lastAlert = 0
+		local function setAlert(on)
+			disconnect(conn)
+			conn = nil
+			if not on then return end
+			conn = RunService.Heartbeat:Connect(function()
+				local hum = getHumanoid()
+				if not hum or hum.MaxHealth <= 0 or hum.Health <= 0 then return end
+				if hum.Health / hum.MaxHealth * 100 < threshold and os.clock() - lastAlert > 5 then
+					lastAlert = os.clock()
+					notify("Low health: " .. math.floor(hum.Health))
+				end
+			end)
+		end
+		makeToggleRow({
+			name = "Low Health Alert", desc = "Toast when your health drops",
+			key = "lowhealth", color = Color3.fromRGB(255, 100, 110), order = 8, parent = combatPage, callback = setAlert,
+		})
+		makeSliderRow({
+			name = "Alert Below %", key = "lowHealthPct", min = 5, max = 90, default = 30,
+			order = 9, parent = combatPage, callback = function(v) threshold = v end,
+		})
+	end
+
+	----------------------------------------------------------------
+	makeSection("TARGET", 15, combatPage)
+
+	-- TARGET INFO HUD
+	do
+		local frame = Instance.new("Frame")
+		frame.Name = "TargetHud"
+		frame.AnchorPoint = Vector2.new(0.5, 0.5)
+		frame.Position = UDim2.new(0.5, 0, 0.72, 0)
+		frame.Size = UDim2.new(0, 210, 0, 54)
+		frame.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+		frame.BackgroundTransparency = 0.15
+		frame.BorderSizePixel = 0
+		frame.Visible = false
+		frame.Parent = screenGui
+		addCorner(frame, 8)
+		do
+			local s = addStroke(frame, accent, 1, 0.5)
+			bindAccent(s, "Color")
+		end
+
+		local nameLbl = Instance.new("TextLabel")
+		nameLbl.Size = UDim2.new(1, -16, 0, 20)
+		nameLbl.Position = UDim2.new(0, 8, 0, 4)
+		nameLbl.BackgroundTransparency = 1
+		nameLbl.TextColor3 = Color3.new(1, 1, 1)
+		nameLbl.Font = Enum.Font.GothamBold
+		nameLbl.TextSize = 13
+		nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+		nameLbl.Text = ""
+		nameLbl.Parent = frame
+
+		local infoLbl = Instance.new("TextLabel")
+		infoLbl.Size = UDim2.new(1, -16, 0, 14)
+		infoLbl.Position = UDim2.new(0, 8, 0, 22)
+		infoLbl.BackgroundTransparency = 1
+		infoLbl.TextColor3 = kTextDim
+		infoLbl.Font = Enum.Font.Gotham
+		infoLbl.TextSize = 11
+		infoLbl.TextXAlignment = Enum.TextXAlignment.Left
+		infoLbl.Text = ""
+		infoLbl.Parent = frame
+
+		local barBack = Instance.new("Frame")
+		barBack.Position = UDim2.new(0, 8, 1, -11)
+		barBack.Size = UDim2.new(1, -16, 0, 5)
+		barBack.BackgroundColor3 = kSwitchOff
+		barBack.BorderSizePixel = 0
+		barBack.Parent = frame
+		addCorner(barBack, -1)
+		local bar = Instance.new("Frame")
+		bar.Size = UDim2.new(1, 0, 1, 0)
+		bar.BackgroundColor3 = Color3.fromRGB(80, 255, 120)
+		bar.BorderSizePixel = 0
+		bar.Parent = barBack
+		addCorner(bar, -1)
+
+		local conn
+		local function setHud(on)
+			disconnect(conn)
+			conn = nil
+			frame.Visible = false
+			if not on then return end
+			local acc = 0
+			conn = RunService.Heartbeat:Connect(function(dt)
+				acc = acc + dt
+				if acc < 0.08 then return end
+				acc = 0
+				local cam = workspace.CurrentCamera
+				if not cam then return end
+				local vp = cam.ViewportSize
+				local center = Vector2.new(vp.X / 2, vp.Y / 2)
+				local best, bestD
+				for _, plr in ipairs(Players:GetPlayers()) do
+					if plr ~= player then
+						local head = plr.Character and (plr.Character:FindFirstChild("Head") or plr.Character:FindFirstChild("HumanoidRootPart"))
+						local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+						if head and hum and hum.Health > 0 then
+							local sp, onScreen = cam:WorldToViewportPoint(head.Position)
+							if onScreen then
+								local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+								if d < 250 and (not bestD or d < bestD) then best, bestD = plr, d end
+							end
+						end
+					end
+				end
+				if best then
+					local hum = best.Character:FindFirstChildOfClass("Humanoid")
+					local hrp = best.Character:FindFirstChild("HumanoidRootPart")
+					local pct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+					local dist = hrp and (hrp.Position - cam.CFrame.Position).Magnitude or 0
+					nameLbl.Text = best.DisplayName
+					infoLbl.Text = string.format("%d / %d HP   -   %d studs", hum.Health, hum.MaxHealth, dist)
+					bar.Size = UDim2.new(pct, 0, 1, 0)
+					bar.BackgroundColor3 = Color3.fromRGB(255 * (1 - pct), 255 * pct, 60)
+					frame.Visible = true
+				else
+					frame.Visible = false
+				end
+			end)
+		end
+		onUnload(function() frame:Destroy() end)
+		makeToggleRow({
+			name = "Target Info", desc = "Name, health and distance of who you aim at",
+			key = "targetinfo", color = Color3.fromRGB(90, 200, 255), order = 16, parent = combatPage, callback = setHud,
+		})
+	end
+end
+
+----------------------------------------------------------------
+-- SERVER TAB
+----------------------------------------------------------------
+do
+	local serverPage = pages.Server
+	local MarketplaceService = game:GetService("MarketplaceService")
+
+	makeSection("THIS SERVER", 0, serverPage)
+
+	local function infoRow(order, title)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 30)
+		row.BackgroundColor3 = kRowBg
+		row.LayoutOrder = order
+		row.Parent = serverPage
+		addCorner(row, 8)
+
+		local a = Instance.new("TextLabel")
+		a.Size = UDim2.new(0, 100, 1, 0)
+		a.Position = UDim2.new(0, 12, 0, 0)
+		a.BackgroundTransparency = 1
+		a.Text = title
+		a.TextColor3 = kTextDim
+		a.Font = Enum.Font.GothamBold
+		a.TextSize = 12
+		a.TextXAlignment = Enum.TextXAlignment.Left
+		a.Parent = row
+
+		local b = Instance.new("TextLabel")
+		b.Size = UDim2.new(1, -120, 1, 0)
+		b.Position = UDim2.new(0, 112, 0, 0)
+		b.BackgroundTransparency = 1
+		b.Text = "..."
+		b.TextColor3 = Color3.fromRGB(230, 230, 235)
+		b.Font = Enum.Font.Gotham
+		b.TextSize = 12
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.TextTruncate = Enum.TextTruncate.AtEnd
+		b.Parent = row
+		return b
+	end
+
+	local gameLbl   = infoRow(1, "Game")
+	local placeLbl  = infoRow(2, "Place ID")
+	local jobLbl    = infoRow(3, "Job ID")
+	local playerLbl = infoRow(4, "Players")
+	local upLbl     = infoRow(5, "Server Uptime")
+	local pingLbl   = infoRow(6, "Ping")
+
+	placeLbl.Text = tostring(game.PlaceId)
+	jobLbl.Text = (game.JobId ~= "" and game.JobId) or "(studio / none)"
+	task.spawn(function()
+		local ok, info = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId) end)
+		gameLbl.Text = (ok and info and info.Name) or "unknown"
+	end)
+
+	do
+		local acc = 1
+		track(RunService.Heartbeat:Connect(function(dt)
+			if not serverPage.Visible then return end
+			acc = acc + dt
+			if acc < 1 then return end
+			acc = 0
+			playerLbl.Text = #Players:GetPlayers() .. " / " .. Players.MaxPlayers
+			local t = math.floor(workspace.DistributedGameTime)
+			upLbl.Text = string.format("%dh %dm %ds", math.floor(t / 3600), math.floor(t / 60) % 60, t % 60)
+			local ping = 0
+			pcall(function() ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue() + 0.5) end)
+			pingLbl.Text = ping .. " ms"
+		end))
+	end
+
+	----------------------------------------------------------------
+	makeSection("ACTIONS", 10, serverPage)
+
+	makeButtonRow({
+		text = "Copy Join Script", order = 11, parent = serverPage,
+		callback = function()
+			copyText(string.format(
+				'game:GetService("TeleportService"):TeleportToPlaceInstance(%d, "%s", game.Players.LocalPlayer)',
+				game.PlaceId, game.JobId), "Join script")
+		end,
+	})
+
+	local hopBusy = false
+	local function hop(order, label)
+		if hopBusy then return end
+		hopBusy = true
+		notify("Searching for " .. label .. " server...")
+		task.spawn(function()
+			local picked
+			local ok, body = pcall(function()
+				return game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=" .. order .. "&limit=100")
+			end)
+			if ok and type(body) == "string" then
+				local okJ, data = pcall(function() return HttpService:JSONDecode(body) end)
+				if okJ and type(data) == "table" and type(data.data) == "table" then
+					for _, srv in ipairs(data.data) do
+						if srv.id ~= game.JobId and type(srv.playing) == "number"
+							and type(srv.maxPlayers) == "number" and srv.playing < srv.maxPlayers then
+							picked = srv.id
+							break
+						end
+					end
+				end
+			end
+			if picked then
+				notify("Hopping...")
+				pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, picked, player) end)
+			else
+				notify("No server found (executor needs HttpGet)")
+			end
+			task.wait(2)
+			hopBusy = false
+		end)
+	end
+	makeButtonRow({ text = "Hop to Smallest Server", order = 12, parent = serverPage, callback = function() hop("Asc", "smallest") end })
+	makeButtonRow({ text = "Hop to Fullest Server",  order = 13, parent = serverPage, callback = function() hop("Desc", "fullest") end })
+end
+
+----------------------------------------------------------------
+-- QUICK SLOTS (Tools tab)
+----------------------------------------------------------------
+do
+	local tools = pages.Tools
+	makeSection("QUICK SLOTS  (Alt+1/2/3 to go)", 40, tools)
+
+	local slots = {}
+	local function hrpNow()
+		return player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	end
+	local function save(i)
+		local hrp = hrpNow()
+		if not hrp then notify("No character") return end
+		slots[i] = hrp.CFrame
+		notify("Slot " .. i .. " saved")
+	end
+	local function go(i)
+		local hrp = hrpNow()
+		if not hrp then notify("No character") return end
+		if not slots[i] then notify("Slot " .. i .. " is empty") return end
+		hrp.CFrame = slots[i]
+		notify("Slot " .. i)
+	end
+	for i = 1, 3 do
+		makeButtonRow({ text = "Save Slot " .. i, order = 40 + i * 2 - 1, parent = tools, callback = function() save(i) end })
+		makeButtonRow({ text = "Go to Slot " .. i, order = 40 + i * 2,     parent = tools, callback = function() go(i) end })
+	end
+
+	local keys = { Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three }
+	track(UserInputService.InputBegan:Connect(function(input, processed)
+		if processed or not UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt) then return end
+		for i, k in ipairs(keys) do
+			if input.KeyCode == k then go(i) end
+		end
+	end))
+end
+
+----------------------------------------------------------------
+-- PRESETS TAB
+----------------------------------------------------------------
+do
+	local presetPage = pages.Presets
+
+	local function applyKeys(keys, label)
+		for _, e in pairs(featureToggles) do pcall(e.set, false, true) end
+		local n = 0
+		for _, key in ipairs(keys) do
+			local e = featureToggles[key]
+			if e then pcall(e.set, true, true) n = n + 1 end
+		end
+		saveSettings()
+		notify(label .. ": " .. n .. " features on")
+	end
+
+	makeSection("QUICK PROFILES", 0, presetPage)
+
+	local profiles = {
+		{ "PvP", { "espBoxes", "espNames", "espHealth", "espDistance", "chams", "teamCheck", "aimbot", "triggerbot",
+			"crosshair", "antifling", "noragdoll", "targetinfo", "hitbox" } },
+		{ "Explorer", { "fly", "noclip", "fullbright", "stats", "infohud", "antiafk", "infjump", "fallclamp" } },
+		{ "Speedrun", { "speed", "highjump", "infjump", "bhop", "sprint", "dash", "fallclamp", "antivoid", "glide" } },
+		{ "ESP Only", { "espBoxes", "espNames", "espHealth", "espDistance", "espTracers", "chams", "skeleton", "headdots", "teamCheck" } },
+		{ "AFK / Chill", { "antiafk", "fpsboost", "stats", "antivoid" } },
+		{ "Photo Mode", { "freecam", "fullbright", "nofog", "hidechat", "hidelist", "hidebackpack", "hidehealth" } },
+		{ "Grinding", { "antiafk", "autoclick", "glide", "fallclamp", "antivoid", "fpsboost", "instantprompts" } },
+	}
+	for i, p in ipairs(profiles) do
+		makeButtonRow({
+			text = "Load: " .. p[1], order = i, parent = presetPage,
+			callback = function() applyKeys(p[2], p[1]) end,
+		})
+	end
+	makeButtonRow({
+		text = "Everything Off", order = 10, parent = presetPage, color = Color3.fromRGB(120, 40, 50),
+		callback = function() applyKeys({}, "All off") end,
+	})
+
+	----------------------------------------------------------------
+	makeSection("MY PRESETS", 20, presetPage)
+	for i = 1, 3 do
+		local id = tostring(i)
+		makeButtonRow({
+			text = "Save Current Setup to Slot " .. i, order = 20 + i * 2 - 1, parent = presetPage,
+			callback = function()
+				local list = {}
+				for key, e in pairs(featureToggles) do
+					if e.get() then list[#list + 1] = key end
+				end
+				settings.presets[id] = list
+				saveSettings()
+				notify("Saved " .. #list .. " features to slot " .. i)
+			end,
+		})
+		makeButtonRow({
+			text = "Load My Slot " .. i, order = 20 + i * 2, parent = presetPage,
+			callback = function()
+				local list = settings.presets[id]
+				if type(list) ~= "table" then notify("Slot " .. i .. " is empty") return end
+				applyKeys(list, "Slot " .. i)
+			end,
+		})
+	end
+end
+
+----------------------------------------------------------------
+-- KEYBINDS TAB
+----------------------------------------------------------------
+do
+	local bindPage = pages.Keybinds
+
+	makeSection("ACTIVE KEYBINDS", 0, bindPage)
+
+	local rows = {}
+	local lastSnap = ""
+
+	local function snapshot()
+		local t = {}
+		for key, k in pairs(settings.binds) do t[#t + 1] = key .. "=" .. k end
+		table.sort(t)
+		return table.concat(t, ";")
+	end
+
+	local function rebuild()
+		for _, r in ipairs(rows) do r:Destroy() end
+		rows = {}
+		local keys = {}
+		for key in pairs(settings.binds) do keys[#keys + 1] = key end
+		table.sort(keys)
+		if #keys == 0 then
+			local lbl = Instance.new("TextLabel")
+			lbl.Size = UDim2.new(1, 0, 0, 40)
+			lbl.BackgroundTransparency = 1
+			lbl.Text = "No keybinds yet. Right-click any toggle (PC) and press a key."
+			lbl.TextColor3 = kTextDim
+			lbl.Font = Enum.Font.Gotham
+			lbl.TextSize = 12
+			lbl.TextWrapped = true
+			lbl.LayoutOrder = 10
+			lbl.Parent = bindPage
+			rows[1] = lbl
+			return
+		end
+		for i, key in ipairs(keys) do
+			local e = featureToggles[key]
+			local row = Instance.new("Frame")
+			row.Size = UDim2.new(1, 0, 0, 36)
+			row.BackgroundColor3 = kRowBg
+			row.LayoutOrder = 10 + i
+			row.Parent = bindPage
+			addCorner(row, 8)
+			rows[#rows + 1] = row
+
+			local keyLbl = Instance.new("TextLabel")
+			keyLbl.Size = UDim2.new(0, 70, 1, 0)
+			keyLbl.Position = UDim2.new(0, 12, 0, 0)
+			keyLbl.BackgroundTransparency = 1
+			keyLbl.Text = "[" .. settings.binds[key] .. "]"
+			keyLbl.TextColor3 = accent
+			keyLbl.Font = Enum.Font.GothamBold
+			keyLbl.TextSize = 13
+			keyLbl.TextXAlignment = Enum.TextXAlignment.Left
+			keyLbl.Parent = row
+
+			local nameLbl = Instance.new("TextLabel")
+			nameLbl.Size = UDim2.new(1, -150, 1, 0)
+			nameLbl.Position = UDim2.new(0, 84, 0, 0)
+			nameLbl.BackgroundTransparency = 1
+			nameLbl.Text = (e and e.name) or key
+			nameLbl.TextColor3 = Color3.fromRGB(230, 230, 235)
+			nameLbl.Font = Enum.Font.Gotham
+			nameLbl.TextSize = 13
+			nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+			nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+			nameLbl.Parent = row
+
+			local clear = Instance.new("TextButton")
+			clear.AnchorPoint = Vector2.new(1, 0.5)
+			clear.Position = UDim2.new(1, -8, 0.5, 0)
+			clear.Size = UDim2.new(0, 52, 0, 24)
+			clear.BackgroundColor3 = Color3.fromRGB(120, 40, 50)
+			clear.Text = "Clear"
+			clear.TextColor3 = Color3.new(1, 1, 1)
+			clear.Font = Enum.Font.GothamBold
+			clear.TextSize = 11
+			clear.AutoButtonColor = false
+			clear.Parent = row
+			addCorner(clear, 6)
+			track(clear.MouseButton1Click:Connect(function()
+				settings.binds[key] = nil
+				saveSettings()
+				refreshBindTag(key)
+				rebuild()
+				lastSnap = snapshot()
+			end))
+		end
+	end
+	rebuild()
+	lastSnap = snapshot()
+
+	do
+		local acc = 0
+		track(RunService.Heartbeat:Connect(function(dt)
+			if not bindPage.Visible then return end
+			acc = acc + dt
+			if acc < 0.4 then return end
+			acc = 0
+			local s = snapshot()
+			if s ~= lastSnap then
+				lastSnap = s
+				rebuild()
+			end
+		end))
+	end
+
+	makeButtonRow({
+		text = "Clear All Keybinds", order = 5, parent = bindPage, color = Color3.fromRGB(120, 40, 50),
+		callback = function()
+			settings.binds = {}
+			for key in pairs(featureToggles) do refreshBindTag(key) end
+			saveSettings()
+			rebuild()
+			lastSnap = snapshot()
+			notify("All keybinds cleared")
+		end,
+	})
+
+	----------------------------------------------------------------
+	-- ON-SCREEN OVERLAY
+	local frame = Instance.new("Frame")
+	frame.Name = "BindHud"
+	frame.AnchorPoint = Vector2.new(1, 0)
+	frame.Position = UDim2.new(1, -8, 0, 8)
+	frame.Size = UDim2.new(0, 200, 0, 24)
+	frame.AutomaticSize = Enum.AutomaticSize.Y
+	frame.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+	frame.BackgroundTransparency = 0.15
+	frame.BorderSizePixel = 0
+	frame.Visible = false
+	frame.Parent = screenGui
+	addCorner(frame, 8)
+	do
+		local s = addStroke(frame, accent, 1, 0.6)
+		bindAccent(s, "Color")
+		local pad = Instance.new("UIPadding")
+		pad.PaddingTop = UDim.new(0, 6)
+		pad.PaddingBottom = UDim.new(0, 6)
+		pad.PaddingLeft = UDim.new(0, 8)
+		pad.PaddingRight = UDim.new(0, 8)
+		pad.Parent = frame
+	end
+	local hudLbl = Instance.new("TextLabel")
+	hudLbl.Size = UDim2.new(1, 0, 0, 0)
+	hudLbl.AutomaticSize = Enum.AutomaticSize.Y
+	hudLbl.BackgroundTransparency = 1
+	hudLbl.RichText = true
+	hudLbl.TextColor3 = Color3.fromRGB(230, 230, 235)
+	hudLbl.Font = Enum.Font.GothamBold
+	hudLbl.TextSize = 12
+	hudLbl.TextXAlignment = Enum.TextXAlignment.Left
+	hudLbl.TextYAlignment = Enum.TextYAlignment.Top
+	hudLbl.Text = ""
+	hudLbl.Parent = frame
+
+	local conn
+	local function setHud(on)
+		disconnect(conn)
+		conn = nil
+		frame.Visible = on
+		if not on then return end
+		local acc = 1
+		conn = RunService.Heartbeat:Connect(function(dt)
+			acc = acc + dt
+			if acc < 0.25 then return end
+			acc = 0
+			local keys = {}
+			for key in pairs(settings.binds) do keys[#keys + 1] = key end
+			table.sort(keys)
+			if #keys == 0 then
+				hudLbl.Text = "no keybinds set"
+				return
+			end
+			local lines = {}
+			for _, key in ipairs(keys) do
+				local e = featureToggles[key]
+				local state = e and e.get()
+				lines[#lines + 1] = string.format('[%s] %s  <font color="%s">%s</font>',
+					settings.binds[key], (e and e.name) or key,
+					state and "#50e880" or "#888899", state and "ON" or "off")
+			end
+			hudLbl.Text = table.concat(lines, "\n")
+		end)
+	end
+	onUnload(function() frame:Destroy() end)
+	makeToggleRow({
+		name = "Keybind Overlay", desc = "Shows your keybinds and their state on screen",
+		opt = "bindHud", color = Color3.fromRGB(190, 190, 255), order = 2, parent = bindPage, callback = setHud,
+	})
+end
+
+----------------------------------------------------------------
+-- THEMES TAB
+----------------------------------------------------------------
+do
+	local themePage = pages.Themes
+
+	local function applyAccentColor(c, full)
+		accent = c
+		for _, e in ipairs(accentTargets) do pcall(function() e[1][e[2]] = accent end) end
+		if full then
+			for _, cb in ipairs(accentCallbacks) do pcall(cb, accent) end
+		end
+	end
+
+	local function restorePreset()
+		local t = themes[settings.accent] or themes[1]
+		applyAccentColor(t.color, true)
+	end
+
+	makeSection("CUSTOM ACCENT", 0, themePage)
+
+	local rgb = { 160, 150, 255 }
+	local customOn = false
+	local function applyCustom()
+		if customOn then applyAccentColor(Color3.fromRGB(rgb[1], rgb[2], rgb[3]), true) end
+	end
+
+	makeToggleRow({
+		name = "Use Custom Accent", desc = "Overrides the swatches with the RGB below",
+		key = "customaccent", color = Color3.fromRGB(255, 120, 200), order = 1, parent = themePage,
+		callback = function(on)
+			customOn = on
+			if on then applyCustom() else restorePreset() end
+		end,
+	})
+	makeSliderRow({
+		name = "Red", key = "themeR", min = 0, max = 255, default = 160, order = 2, parent = themePage,
+		callback = function(v) rgb[1] = v applyCustom() end,
+	})
+	makeSliderRow({
+		name = "Green", key = "themeG", min = 0, max = 255, default = 150, order = 3, parent = themePage,
+		callback = function(v) rgb[2] = v applyCustom() end,
+	})
+	makeSliderRow({
+		name = "Blue", key = "themeB", min = 0, max = 255, default = 255, order = 4, parent = themePage,
+		callback = function(v) rgb[3] = v applyCustom() end,
+	})
+
+	makeSection("EFFECTS", 10, themePage)
+
+	-- RAINBOW ACCENT
+	do
+		local conn
+		local function setRainbow(on)
+			disconnect(conn)
+			conn = nil
+			if on then
+				local acc = 0
+				conn = RunService.Heartbeat:Connect(function(dt)
+					acc = acc + dt
+					local full = false
+					if acc >= 0.5 then acc = 0 full = true end
+					applyAccentColor(Color3.fromHSV((os.clock() * 0.15) % 1, 0.65, 1), full)
+				end)
+			elseif customOn then
+				applyCustom()
+			else
+				restorePreset()
+			end
+		end
+		onUnload(function() disconnect(conn) end)
+		makeToggleRow({
+			name = "Rainbow Accent", desc = "Menu color slowly cycles",
+			key = "rainbowaccent", color = Color3.fromRGB(255, 120, 200), order = 11, parent = themePage, callback = setRainbow,
+		})
+	end
+
+	makeButtonRow({
+		text = "Random Accent", order = 12, parent = themePage,
+		callback = function()
+			local c = Color3.fromHSV(math.random(), 0.6 + math.random() * 0.3, 1)
+			rgb = { math.floor(c.R * 255), math.floor(c.G * 255), math.floor(c.B * 255) }
+			applyAccentColor(c, true)
+			notify("Random accent")
+		end,
+	})
+	makeButtonRow({
+		text = "Back to Preset Accent", order = 13, parent = themePage,
+		callback = function()
+			restorePreset()
+			notify("Preset accent restored")
+		end,
+	})
+
+	makeSection("MENU TITLE", 20, themePage)
+	do
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 38)
+		row.BackgroundColor3 = kRowBg
+		row.LayoutOrder = 21
+		row.Parent = themePage
+		addCorner(row, 8)
+
+		local box = Instance.new("TextBox")
+		box.Size = UDim2.new(1, -24, 1, 0)
+		box.Position = UDim2.new(0, 12, 0, 0)
+		box.BackgroundTransparency = 1
+		box.PlaceholderText = "custom menu title..."
+		box.PlaceholderColor3 = kTextDim
+		box.Text = ""
+		box.TextColor3 = Color3.fromRGB(230, 230, 235)
+		box.Font = Enum.Font.Gotham
+		box.TextSize = 14
+		box.TextXAlignment = Enum.TextXAlignment.Left
+		box.ClearTextOnFocus = false
+		box.Parent = row
+		track(box.FocusLost:Connect(function()
+			if box.Text ~= "" then titleLabel.Text = box.Text end
+		end))
+	end
+	makeButtonRow({
+		text = "Reset Title", order = 22, parent = themePage,
+		callback = function() titleLabel.Text = "Ghosted Menu" end,
+	})
+end
+
+----------------------------------------------------------------
+-- NOTES TAB
+----------------------------------------------------------------
+do
+	local notesPage = pages.Notes
+	makeSection("SCRATCHPAD  (saved with your settings)", 0, notesPage)
+
+	local holder = Instance.new("Frame")
+	holder.Size = UDim2.new(1, 0, 0, 240)
+	holder.BackgroundColor3 = kRowBg
+	holder.LayoutOrder = 1
+	holder.Parent = notesPage
+	addCorner(holder, 8)
+
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(1, -20, 1, -16)
+	box.Position = UDim2.new(0, 10, 0, 8)
+	box.BackgroundTransparency = 1
+	box.MultiLine = true
+	box.TextWrapped = true
+	box.ClearTextOnFocus = false
+	box.PlaceholderText = "write anything here..."
+	box.PlaceholderColor3 = kTextDim
+	box.Name = "NotesBox"
+	box.Text = settings.notes or ""
+	box.TextColor3 = Color3.fromRGB(230, 230, 235)
+	box.Font = Enum.Font.Gotham
+	box.TextSize = 13
+	box.TextXAlignment = Enum.TextXAlignment.Left
+	box.TextYAlignment = Enum.TextYAlignment.Top
+	box.Parent = holder
+
+	track(box.FocusLost:Connect(function()
+		settings.notes = box.Text
+		saveSettings()
+	end))
+
+	makeButtonRow({
+		text = "Copy Notes", order = 2, parent = notesPage,
+		callback = function()
+			if box.Text == "" then notify("Notes are empty") return end
+			copyText(box.Text, "Notes")
+		end,
+	})
+	makeButtonRow({
+		text = "Clear Notes", order = 3, parent = notesPage, color = Color3.fromRGB(120, 40, 50),
+		callback = function()
+			box.Text = ""
+			settings.notes = ""
+			saveSettings()
+			notify("Notes cleared")
+		end,
+	})
+end
+
+----------------------------------------------------------------
+-- EXTRAS FOR EXISTING TABS (part 1: Move, Visuals, Players, Misc)
+----------------------------------------------------------------
+local StarterGui = game:GetService("StarterGui")
+
+-- MOVE
+do
+	local page = pages.Move
+	makeSection("MORE MOVEMENT", 20, page)
+
+	-- AUTO JUMP
+	do
+		local conn
+		local function setAutoJump(on)
+			disconnect(conn)
+			conn = nil
+			if not on then return end
+			conn = RunService.Heartbeat:Connect(function()
+				local hum = getHumanoid()
+				if hum and hum.MoveDirection.Magnitude > 0 and hum.FloorMaterial ~= Enum.Material.Air then
+					hum:ChangeState(Enum.HumanoidStateType.Jumping)
+				end
+			end)
+		end
+		makeToggleRow({
+			name = "Auto Jump", desc = "Jumps automatically while you move",
+			key = "autojump", color = Color3.fromRGB(90, 230, 150), order = 21, parent = page, callback = setAutoJump,
+		})
+	end
+
+	local speeds = { { "Set Walk Speed: 16 (default)", 16 }, { "Set Walk Speed: 32", 32 }, { "Set Walk Speed: 64", 64 }, { "Set Walk Speed: 100", 100 } }
+	for i, s in ipairs(speeds) do
+		makeButtonRow({
+			text = s[1], order = 21 + i, parent = page,
+			callback = function()
+				local hum = getHumanoid()
+				if hum then hum.WalkSpeed = s[2] notify("WalkSpeed " .. s[2]) end
+			end,
+		})
+	end
+	makeButtonRow({
+		text = "Teleport Up 50 Studs", order = 30, parent = page,
+		callback = function()
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then hrp.CFrame = hrp.CFrame + Vector3.new(0, 50, 0) end
+		end,
+	})
+	makeButtonRow({
+		text = "Teleport Down 50 Studs", order = 31, parent = page,
+		callback = function()
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then hrp.CFrame = hrp.CFrame - Vector3.new(0, 50, 0) end
+		end,
+	})
+	makeButtonRow({
+		text = "Reset Speed & Jump to Default", order = 32, parent = page, color = Color3.fromRGB(120, 40, 50),
+		callback = function()
+			local hum = getHumanoid()
+			if hum then
+				hum.WalkSpeed = 16
+				pcall(function() hum.UseJumpPower = true end)
+				hum.JumpPower = 50
+				notify("Speed and jump reset")
+			end
+		end,
+	})
+end
+
+-- VISUALS
+do
+	local page = pages.Visuals
+	makeSection("LIGHTS & HELPERS", 60, page)
+
+	-- SPOTLIGHT
+	do
+		local light
+		local on_ = false
+		local brightness = 3
+		local function build()
+			if light then light:Destroy() light = nil end
+			if not on_ then return end
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if not hrp then return end
+			light = Instance.new("PointLight")
+			light.Range = 45
+			light.Brightness = brightness
+			light.Shadows = false
+			light.Parent = hrp
+		end
+		track(player.CharacterAdded:Connect(function()
+			if on_ then task.wait(0.5) build() end
+		end))
+		onUnload(function() on_ = false build() end)
+		makeToggleRow({
+			name = "Personal Light", desc = "A light that follows you",
+			key = "personallight", color = Color3.fromRGB(255, 240, 150), order = 61, parent = page,
+			callback = function(on) on_ = on build() end,
+		})
+		makeSliderRow({
+			name = "Light Brightness", key = "lightBrightness", min = 1, max = 10, default = 3,
+			order = 62, parent = page,
+			callback = function(v)
+				brightness = v
+				if light then light.Brightness = v end
+			end,
+		})
+	end
+
+	-- NIGHT VISION
+	do
+		local fx
+		local function setNV(on)
+			if fx then fx:Destroy() fx = nil end
+			if not on then return end
+			fx = Instance.new("ColorCorrectionEffect")
+			fx.Name = "GhostedNV"
+			fx.TintColor = Color3.fromRGB(150, 255, 160)
+			fx.Brightness = 0.18
+			fx.Contrast = 0.25
+			fx.Saturation = -0.3
+			fx.Parent = Lighting
+		end
+		onUnload(function() setNV(false) end)
+		makeToggleRow({
+			name = "Night Vision", desc = "Green tint and brighter image",
+			key = "nightvision", color = Color3.fromRGB(110, 255, 140), order = 63, parent = page, callback = setNV,
+		})
+	end
+
+	-- HIGHLIGHT SELF
+	do
+		local hl, conn
+		local function build()
+			if hl then hl:Destroy() hl = nil end
+			local char = player.Character
+			if not char then return end
+			hl = Instance.new("Highlight")
+			hl.FillTransparency = 1
+			hl.OutlineColor = accent
+			hl.OutlineTransparency = 0
+			hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			hl.Adornee = char
+			hl.Parent = chamsFolder
+		end
+		local function setSelf(on)
+			disconnect(conn)
+			conn = nil
+			if hl then hl:Destroy() hl = nil end
+			if on then
+				build()
+				conn = player.CharacterAdded:Connect(function() task.wait(0.3) build() end)
+			end
+		end
+		onUnload(function() setSelf(false) end)
+		makeToggleRow({
+			name = "Highlight Self", desc = "Outline around your own character",
+			key = "highlightself", color = Color3.fromRGB(160, 150, 255), order = 64, parent = page, callback = setSelf,
+		})
+	end
+
+	-- TOOL ESP
+	do
+		local conn
+		local tags = {}
+		local function clear()
+			for tool, bb in pairs(tags) do bb:Destroy() tags[tool] = nil end
+		end
+		local function scan()
+			local seen = {}
+			for _, d in ipairs(workspace:GetDescendants()) do
+				if d:IsA("Tool") then
+					local handle = d:FindFirstChild("Handle")
+					local m = d:FindFirstAncestorOfClass("Model")
+					if handle and not (m and m:FindFirstChildOfClass("Humanoid")) then
+						seen[d] = true
+						if not tags[d] then
+							local bb = Instance.new("BillboardGui")
+							bb.Size = UDim2.fromOffset(110, 20)
+							bb.AlwaysOnTop = true
+							bb.StudsOffset = Vector3.new(0, 2, 0)
+							bb.Adornee = handle
+							bb.Parent = chamsFolder
+							local lbl = Instance.new("TextLabel")
+							lbl.Size = UDim2.new(1, 0, 1, 0)
+							lbl.BackgroundTransparency = 1
+							lbl.Text = d.Name
+							lbl.TextColor3 = Color3.fromRGB(255, 220, 90)
+							lbl.TextStrokeTransparency = 0.4
+							lbl.Font = Enum.Font.GothamBold
+							lbl.TextSize = 12
+							lbl.Parent = bb
+							tags[d] = bb
+						end
+					end
+				end
+			end
+			for tool, bb in pairs(tags) do
+				if not seen[tool] then bb:Destroy() tags[tool] = nil end
+			end
+		end
+		local function setToolEsp(on)
+			disconnect(conn)
+			conn = nil
+			clear()
+			if not on then return end
+			local acc = 10
+			conn = RunService.Heartbeat:Connect(function(dt)
+				acc = acc + dt
+				if acc < 4 then return end
+				acc = 0
+				pcall(scan)
+			end)
+		end
+		onUnload(function() setToolEsp(false) end)
+		makeToggleRow({
+			name = "Tool ESP", desc = "Labels tools lying around the map",
+			key = "toolesp", color = Color3.fromRGB(255, 220, 90), order = 65, parent = page, callback = setToolEsp,
+		})
+	end
+end
+
+-- PLAYERS
+do
+	local page = pages.Players
+	makeSection("FRIENDS & LISTS", 5000, page)
+
+	-- FRIEND ALERT
+	do
+		local conn
+		makeToggleRow({
+			name = "Friend Alert", desc = "Toast when a friend joins the server",
+			key = "friendalert", color = Color3.fromRGB(90, 230, 150), order = 5001, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				conn = Players.PlayerAdded:Connect(function(p)
+					task.spawn(function()
+						local ok, isF = pcall(function() return player:IsFriendsWith(p.UserId) end)
+						if ok and isF then notify("Friend joined: " .. p.DisplayName) end
+					end)
+				end)
+			end,
+		})
+	end
+
+	-- HIGHLIGHT FRIENDS
+	do
+		local conn
+		local friends = {}
+		local marks = {}
+		local function clear()
+			for plr, h in pairs(marks) do h:Destroy() marks[plr] = nil end
+		end
+		makeToggleRow({
+			name = "Highlight Friends", desc = "Green outline on your friends",
+			key = "highlightfriends", color = Color3.fromRGB(80, 255, 120), order = 5002, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				clear()
+				if not on then return end
+				local acc = 5
+				conn = RunService.Heartbeat:Connect(function(dt)
+					acc = acc + dt
+					if acc < 2 then return end
+					acc = 0
+					for _, p in ipairs(Players:GetPlayers()) do
+						if p ~= player then
+							if friends[p.UserId] == nil then
+								friends[p.UserId] = false
+								task.spawn(function()
+									local ok, isF = pcall(function() return player:IsFriendsWith(p.UserId) end)
+									friends[p.UserId] = ok and isF or false
+								end)
+							end
+							if friends[p.UserId] and p.Character then
+								local h = marks[p]
+								if not h then
+									h = Instance.new("Highlight")
+									h.FillTransparency = 0.7
+									h.FillColor = Color3.fromRGB(80, 255, 120)
+									h.OutlineColor = Color3.fromRGB(80, 255, 120)
+									h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+									h.Parent = chamsFolder
+									marks[p] = h
+								end
+								if h.Adornee ~= p.Character then h.Adornee = p.Character end
+							end
+						end
+					end
+				end)
+			end,
+		})
+		onUnload(function() disconnect(conn) clear() end)
+	end
+
+	makeButtonRow({
+		text = "Copy All Usernames", order = 5003, parent = page,
+		callback = function()
+			local t = {}
+			for _, p in ipairs(Players:GetPlayers()) do t[#t + 1] = p.Name end
+			copyText(table.concat(t, "\n"), #t .. " usernames")
+		end,
+	})
+	makeButtonRow({
+		text = "Copy All Display Names", order = 5004, parent = page,
+		callback = function()
+			local t = {}
+			for _, p in ipairs(Players:GetPlayers()) do t[#t + 1] = p.DisplayName end
+			copyText(table.concat(t, "\n"), #t .. " display names")
+		end,
+	})
+end
+
+-- MISC
+do
+	local page = pages.Misc
+	makeSection("INTERFACE & SAFETY", 100, page)
+
+	local defs = {
+		{ "Hide Chat", "hidechat", Enum.CoreGuiType.Chat },
+		{ "Hide Player List", "hidelist", Enum.CoreGuiType.PlayerList },
+		{ "Hide Backpack", "hidebackpack", Enum.CoreGuiType.Backpack },
+		{ "Hide Health Bar", "hidehealth", Enum.CoreGuiType.Health },
+	}
+	for i, d in ipairs(defs) do
+		makeToggleRow({
+			name = d[1], desc = "Hides the default Roblox " .. string.lower(string.sub(d[1], 6)),
+			key = d[2], color = Color3.fromRGB(190, 190, 255), order = 100 + i, parent = page,
+			callback = function(on) pcall(function() StarterGui:SetCoreGuiEnabled(d[3], not on) end) end,
+		})
+	end
+	onUnload(function()
+		for _, d in ipairs(defs) do pcall(function() StarterGui:SetCoreGuiEnabled(d[3], true) end) end
+	end)
+
+	-- AUTO REJOIN ON KICK
+	do
+		local conn
+		makeToggleRow({
+			name = "Auto Rejoin", desc = "Rejoins the game if you get disconnected",
+			key = "autorejoin", color = Color3.fromRGB(255, 200, 90), order = 110, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				local GuiService = game:GetService("GuiService")
+				conn = GuiService.ErrorMessageChanged:Connect(function()
+					if GuiService:GetErrorMessage() ~= "" then
+						task.wait(1)
+						pcall(function() TeleportService:Teleport(game.PlaceId, player) end)
+					end
+				end)
+			end,
+		})
+	end
+
+	-- UNLOCK MOUSE
+	do
+		local conn
+		makeToggleRow({
+			name = "Unlock Mouse", desc = "Frees the cursor in games that lock it",
+			key = "unlockmouse", color = Color3.fromRGB(130, 200, 255), order = 111, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				conn = RunService.RenderStepped:Connect(function()
+					UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+					UserInputService.MouseIconEnabled = true
+				end)
+			end,
+		})
+	end
+end
+
+----------------------------------------------------------------
+-- EXTRAS FOR EXISTING TABS (part 2: Extra, Fun, World, Chat)
+----------------------------------------------------------------
+-- EXTRA
+do
+	local page = pages.Extra
+	makeSection("BOOSTS", 60, page)
+
+	-- ROCKET BOOST (hold R)
+	do
+		local conn
+		local power = 60
+		makeToggleRow({
+			name = "Rocket Boost", desc = "Hold R to fly upward",
+			key = "rocket", color = Color3.fromRGB(255, 120, 90), order = 61, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				conn = RunService.Heartbeat:Connect(function()
+					if UserInputService:GetFocusedTextBox() then return end
+					if not UserInputService:IsKeyDown(Enum.KeyCode.R) then return end
+					local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+					if hrp then
+						local v = hrp.AssemblyLinearVelocity
+						hrp.AssemblyLinearVelocity = Vector3.new(v.X, power, v.Z)
+					end
+				end)
+			end,
+		})
+		makeSliderRow({
+			name = "Rocket Power", key = "rocketPower", min = 20, max = 200, default = 60,
+			order = 62, parent = page, callback = function(v) power = v end,
+		})
+	end
+
+	makeButtonRow({ text = "Zero Gravity", order = 63, parent = page,
+		callback = function() workspace.Gravity = 0 notify("Gravity 0") end })
+	makeButtonRow({ text = "Reverse Gravity (float up)", order = 64, parent = page,
+		callback = function() workspace.Gravity = -50 notify("Gravity -50") end })
+end
+
+-- FUN
+do
+	local page = pages.Fun
+	makeSection("SILLY STUFF", 30, page)
+
+	-- LOOK AT CURSOR
+	do
+		local conn
+		makeToggleRow({
+			name = "Face Cursor", desc = "Your character turns toward the mouse",
+			key = "facecursor", color = Color3.fromRGB(255, 200, 90), order = 31, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				local hum = getHumanoid()
+				if hum then hum.AutoRotate = not on end
+				if not on then return end
+				local mouse = player:GetMouse()
+				conn = RunService.Heartbeat:Connect(function()
+					local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+					local hit = mouse.Hit
+					if hrp and hit then
+						local p = hit.Position
+						hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(p.X, hrp.Position.Y, p.Z))
+					end
+				end)
+			end,
+		})
+	end
+
+	-- RAGDOLL SELF
+	do
+		local conn
+		makeToggleRow({
+			name = "Ragdoll Self", desc = "Go limp (PlatformStand)",
+			key = "ragdollself", color = Color3.fromRGB(255, 120, 150), order = 32, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if on then
+					conn = RunService.Heartbeat:Connect(function()
+						local hum = getHumanoid()
+						if hum then hum.PlatformStand = true end
+					end)
+				else
+					local hum = getHumanoid()
+					if hum then hum.PlatformStand = false end
+				end
+			end,
+		})
+	end
+
+	-- RANDOM COLORS
+	do
+		local orig = setmetatable({}, { __mode = "k" })
+		makeButtonRow({
+			text = "Randomize Body Colors", order = 33, parent = page,
+			callback = function()
+				local char = player.Character
+				if not char then return end
+				for _, p in ipairs(char:GetDescendants()) do
+					if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+						if orig[p] == nil then orig[p] = p.Color end
+						p.Color = Color3.fromHSV(math.random(), 0.7, 1)
+					end
+				end
+			end,
+		})
+		makeButtonRow({
+			text = "Restore Body Colors", order = 34, parent = page,
+			callback = function()
+				for p, c in pairs(orig) do
+					if p.Parent then pcall(function() p.Color = c end) end
+					orig[p] = nil
+				end
+			end,
+		})
+	end
+end
+
+-- WORLD
+do
+	local page = pages.World
+	makeSection("MORE WORLD", 60, page)
+
+	-- SHADOWS OFF
+	do
+		local saved
+		makeToggleRow({
+			name = "Shadows Off", desc = "Turns global shadows off",
+			key = "noshadows", color = Color3.fromRGB(190, 190, 255), order = 61, parent = page,
+			callback = function(on)
+				if on then
+					saved = Lighting.GlobalShadows
+					Lighting.GlobalShadows = false
+				elseif saved ~= nil then
+					Lighting.GlobalShadows = saved
+					saved = nil
+				end
+			end,
+		})
+	end
+
+	-- REMOVE CLOUDS
+	do
+		local saved
+		makeToggleRow({
+			name = "Remove Clouds", desc = "Hides the terrain clouds",
+			key = "noclouds", color = Color3.fromRGB(190, 220, 255), order = 62, parent = page,
+			callback = function(on)
+				local clouds = workspace.Terrain:FindFirstChildOfClass("Clouds")
+				if not clouds then return end
+				if on then
+					saved = clouds.Enabled
+					clouds.Enabled = false
+				elseif saved ~= nil then
+					clouds.Enabled = saved
+					saved = nil
+				end
+			end,
+		})
+	end
+
+	local sun, bloom
+	local function getSun()
+		if not sun or not sun.Parent then
+			sun = Instance.new("SunRaysEffect")
+			sun.Name = "GhostedSunRays"
+			sun.Parent = Lighting
+		end
+		return sun
+	end
+	local function getBloom()
+		if not bloom or not bloom.Parent then
+			bloom = Instance.new("BloomEffect")
+			bloom.Name = "GhostedBloom"
+			bloom.Size = 24
+			bloom.Threshold = 0.8
+			bloom.Intensity = 0
+			bloom.Parent = Lighting
+		end
+		return bloom
+	end
+	onUnload(function()
+		if sun then sun:Destroy() end
+		if bloom then bloom:Destroy() end
+	end)
+	makeSliderRow({
+		name = "Sun Rays", key = "sunRays", min = 0, max = 100, default = 0,
+		order = 63, parent = page, callback = function(v) getSun().Intensity = v / 100 end,
+	})
+	makeSliderRow({
+		name = "Bloom", key = "bloomAmt", min = 0, max = 100, default = 0,
+		order = 64, parent = page, callback = function(v) getBloom().Intensity = v / 25 end,
+	})
+	makeSliderRow({
+		name = "Water Transparency %", key = "waterTrans",
+		min = 0, max = 100, default = math.clamp(math.floor(workspace.Terrain.WaterTransparency * 100 + 0.5), 0, 100),
+		order = 65, parent = page,
+		callback = function(v) workspace.Terrain.WaterTransparency = v / 100 end,
+	})
+end
+
+-- CHAT
+do
+	local page = pages.Chat
+	makeSection("ALERTS", 30, page)
+
+	local keyword = ""
+	do
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 38)
+		row.BackgroundColor3 = kRowBg
+		row.LayoutOrder = 31
+		row.Parent = page
+		addCorner(row, 8)
+		local box = Instance.new("TextBox")
+		box.Size = UDim2.new(1, -24, 1, 0)
+		box.Position = UDim2.new(0, 12, 0, 0)
+		box.BackgroundTransparency = 1
+		box.PlaceholderText = "alert keyword (optional)..."
+		box.PlaceholderColor3 = kTextDim
+		box.Text = ""
+		box.TextColor3 = Color3.fromRGB(230, 230, 235)
+		box.Font = Enum.Font.Gotham
+		box.TextSize = 14
+		box.TextXAlignment = Enum.TextXAlignment.Left
+		box.ClearTextOnFocus = false
+		box.Parent = row
+		track(box.FocusLost:Connect(function() keyword = string.lower(box.Text) end))
+	end
+
+	do
+		local hooks = {}
+		local addedConn
+		local function hook(plr)
+			if plr == player or hooks[plr] then return end
+			hooks[plr] = plr.Chatted:Connect(function(msg)
+				local m = string.lower(msg)
+				local hit = string.find(m, string.lower(player.Name), 1, true)
+					or string.find(m, string.lower(player.DisplayName), 1, true)
+					or (keyword ~= "" and string.find(m, keyword, 1, true))
+				if hit then notify(plr.DisplayName .. ": " .. string.sub(msg, 1, 40)) end
+			end)
+		end
+		makeToggleRow({
+			name = "Mention Alert", desc = "Toast when your name or keyword is said",
+			key = "mentionalert", color = Color3.fromRGB(255, 200, 90), order = 32, parent = page,
+			callback = function(on)
+				disconnect(addedConn)
+				addedConn = nil
+				for p, c in pairs(hooks) do disconnect(c) hooks[p] = nil end
+				if on then
+					for _, p in ipairs(Players:GetPlayers()) do hook(p) end
+					addedConn = Players.PlayerAdded:Connect(hook)
+				end
+			end,
+		})
+	end
+end
+
+----------------------------------------------------------------
+-- EXTRAS FOR EXISTING TABS (part 3: Tools, Combat, Server, Keybinds, Themes, Notes, Config)
+----------------------------------------------------------------
+-- TOOLS
+do
+	local page = pages.Tools
+	makeSection("MORE TOOLS", 60, page)
+
+	local function myHrp() return player.Character and player.Character:FindFirstChild("HumanoidRootPart") end
+
+	makeButtonRow({
+		text = "Grab Nearby Tools", order = 61, parent = page,
+		callback = function()
+			local hrp = myHrp()
+			if not hrp then notify("No character") return end
+			if typeof(firetouchinterest) ~= "function" then notify("Executor has no firetouchinterest") return end
+			local n = 0
+			for _, d in ipairs(workspace:GetDescendants()) do
+				if d:IsA("Tool") then
+					local handle = d:FindFirstChild("Handle")
+					local m = d:FindFirstAncestorOfClass("Model")
+					if handle and not (m and m:FindFirstChildOfClass("Humanoid"))
+						and (handle.Position - hrp.Position).Magnitude <= 40 then
+						pcall(firetouchinterest, hrp, handle, 0)
+						task.wait()
+						pcall(firetouchinterest, hrp, handle, 1)
+						n = n + 1
+					end
+				end
+			end
+			notify(n > 0 and ("Touched " .. n .. " tools") or "No tools nearby")
+		end,
+	})
+	makeButtonRow({
+		text = "Drop All Tools", order = 62, parent = page,
+		callback = function()
+			local hrp = myHrp()
+			local char = player.Character
+			local bp = player:FindFirstChildOfClass("Backpack")
+			if not (hrp and char) then return end
+			local n = 0
+			local function drop(container)
+				if not container then return end
+				for _, t in ipairs(container:GetChildren()) do
+					if t:IsA("Tool") then
+						t.Parent = workspace
+						local h = t:FindFirstChild("Handle")
+						if h then pcall(function() h.CFrame = hrp.CFrame * CFrame.new(0, 0, -4) end) end
+						n = n + 1
+					end
+				end
+			end
+			drop(char)
+			drop(bp)
+			notify("Dropped " .. n .. " tools")
+		end,
+	})
+	makeButtonRow({
+		text = "Delete All My Tools (local)", order = 63, parent = page, color = Color3.fromRGB(120, 40, 50),
+		callback = function()
+			local n = 0
+			for _, c in ipairs({ player.Character, player:FindFirstChildOfClass("Backpack") }) do
+				for _, t in ipairs(c:GetChildren()) do
+					if t:IsA("Tool") then t:Destroy() n = n + 1 end
+				end
+			end
+			notify("Deleted " .. n .. " tools")
+		end,
+	})
+	makeButtonRow({
+		text = "Teleport to Camera Position", order = 64, parent = page,
+		callback = function()
+			local hrp, cam = myHrp(), workspace.CurrentCamera
+			if hrp and cam then hrp.CFrame = cam.CFrame end
+		end,
+	})
+end
+
+-- COMBAT
+do
+	local page = pages.Combat
+	makeSection("AWARENESS", 30, page)
+
+	-- RADAR
+	do
+		local frame = Instance.new("Frame")
+		frame.Name = "Radar"
+		frame.AnchorPoint = Vector2.new(0, 1)
+		frame.Position = UDim2.new(0, 12, 1, -12)
+		frame.Size = UDim2.fromOffset(150, 150)
+		frame.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+		frame.BackgroundTransparency = 0.25
+		frame.BorderSizePixel = 0
+		frame.Visible = false
+		frame.Parent = screenGui
+		addCorner(frame, -1)
+		do
+			local s = addStroke(frame, accent, 1.5, 0.3)
+			bindAccent(s, "Color")
+		end
+		local me = Instance.new("Frame")
+		me.AnchorPoint = Vector2.new(0.5, 0.5)
+		me.Position = UDim2.new(0.5, 0, 0.5, 0)
+		me.Size = UDim2.fromOffset(7, 7)
+		me.BackgroundColor3 = Color3.new(1, 1, 1)
+		me.BorderSizePixel = 0
+		me.Parent = frame
+		addCorner(me, -1)
+
+		local dots = {}
+		local range = 150
+		local conn
+		local function setRadar(on)
+			disconnect(conn)
+			conn = nil
+			frame.Visible = on
+			if not on then return end
+			conn = RunService.Heartbeat:Connect(function()
+				local cam = workspace.CurrentCamera
+				local myH = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+				if not (cam and myH) then return end
+				local look = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+				if look.Magnitude < 0.01 then return end
+				look = look.Unit
+				local right = look:Cross(Vector3.yAxis)
+				local radius = 70
+				local used = 0
+				for _, plr in ipairs(Players:GetPlayers()) do
+					if plr ~= player then
+						local th = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+						local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+						if th and hum and hum.Health > 0 then
+							used = used + 1
+							local d = dots[used]
+							if not d then
+								d = Instance.new("Frame")
+								d.AnchorPoint = Vector2.new(0.5, 0.5)
+								d.Size = UDim2.fromOffset(6, 6)
+								d.BorderSizePixel = 0
+								d.Parent = frame
+								addCorner(d, -1)
+								dots[used] = d
+							end
+							local rel = th.Position - myH.Position
+							local x = rel:Dot(right) / range * radius
+							local y = -rel:Dot(look) / range * radius
+							local v = Vector2.new(x, y)
+							if v.Magnitude > radius then v = v.Unit * radius end
+							d.Position = UDim2.new(0.5, v.X, 0.5, v.Y)
+							local friendly = espTeamCheck and plr.Team ~= nil and plr.Team == player.Team
+							d.BackgroundColor3 = friendly and Color3.fromRGB(90, 160, 255) or Color3.fromRGB(255, 80, 90)
+							d.Visible = true
+						end
+					end
+				end
+				for i = used + 1, #dots do dots[i].Visible = false end
+			end)
+		end
+		onUnload(function() frame:Destroy() end)
+		makeToggleRow({
+			name = "Radar", desc = "Mini-map of nearby players (bottom left)",
+			key = "radar", color = Color3.fromRGB(90, 200, 255), order = 31, parent = page, callback = setRadar,
+		})
+		makeSliderRow({
+			name = "Radar Range", key = "radarRange", min = 50, max = 500, default = 150,
+			order = 32, parent = page, callback = function(v) range = v end,
+		})
+	end
+
+	-- DEATH NOTIFIER
+	do
+		local conns = {}
+		local function clear()
+			for i = #conns, 1, -1 do disconnect(conns[i]) conns[i] = nil end
+		end
+		local function hookChar(plr, char)
+			local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
+			if hum then
+				conns[#conns + 1] = hum.Died:Connect(function() notify(plr.DisplayName .. " died") end)
+			end
+		end
+		local function hookPlayer(plr)
+			if plr == player then return end
+			conns[#conns + 1] = plr.CharacterAdded:Connect(function(c) hookChar(plr, c) end)
+			if plr.Character then task.spawn(hookChar, plr, plr.Character) end
+		end
+		makeToggleRow({
+			name = "Death Notifier", desc = "Toast whenever someone dies",
+			key = "deathnotify", color = Color3.fromRGB(255, 100, 110), order = 33, parent = page,
+			callback = function(on)
+				clear()
+				if not on then return end
+				for _, p in ipairs(Players:GetPlayers()) do hookPlayer(p) end
+				conns[#conns + 1] = Players.PlayerAdded:Connect(hookPlayer)
+			end,
+		})
+		onUnload(clear)
+	end
+end
+
+-- SERVER
+do
+	local page = pages.Server
+	makeSection("MORE", 20, page)
+	makeButtonRow({
+		text = "Copy Player List", order = 21, parent = page,
+		callback = function()
+			local lines = {}
+			for _, p in ipairs(Players:GetPlayers()) do
+				lines[#lines + 1] = string.format("%s (@%s)%s", p.DisplayName, p.Name, p.Team and (" - " .. p.Team.Name) or "")
+			end
+			copyText(table.concat(lines, "\n"), #lines .. " players")
+		end,
+	})
+	makeButtonRow({
+		text = "Copy Server Info", order = 22, parent = page,
+		callback = function()
+			copyText(string.format("PlaceId: %d\nJobId: %s\nPlayers: %d/%d",
+				game.PlaceId, game.JobId, #Players:GetPlayers(), Players.MaxPlayers), "Server info")
+		end,
+	})
+end
+
+-- KEYBINDS
+makeButtonRow({
+	text = "Copy Keybind List", order = 6, parent = pages.Keybinds,
+	callback = function()
+		local t = {}
+		for key, k in pairs(settings.binds) do
+			local e = featureToggles[key]
+			t[#t + 1] = "[" .. k .. "] " .. ((e and e.name) or key)
+		end
+		table.sort(t)
+		if #t == 0 then notify("No keybinds") return end
+		copyText(table.concat(t, "\n"), "Keybinds")
+	end,
+})
+
+-- THEMES
+do
+	local page = pages.Themes
+	makeSection("LOOK & FEEL", 30, page)
+
+	local fonts = {
+		Enum.Font.GothamBold, Enum.Font.Arcade, Enum.Font.SciFi, Enum.Font.Fantasy,
+		Enum.Font.Code, Enum.Font.Bangers, Enum.Font.Cartoon, Enum.Font.Highway,
+	}
+	local fontIdx = 1
+	makeButtonRow({
+		text = "Cycle Title Font", order = 31, parent = page,
+		callback = function()
+			fontIdx = fontIdx % #fonts + 1
+			titleLabel.Font = fonts[fontIdx]
+			notify("Font: " .. fonts[fontIdx].Name)
+		end,
+	})
+
+	local mainCorner = mainFrame:FindFirstChildOfClass("UICorner")
+	local mainStroke = mainFrame:FindFirstChildOfClass("UIStroke")
+	makeSliderRow({
+		name = "Corner Roundness", key = "menuCorner", min = 0, max = 30, default = 14,
+		order = 32, parent = page,
+		callback = function(v) if mainCorner then mainCorner.CornerRadius = UDim.new(0, v) end end,
+	})
+	makeSliderRow({
+		name = "Border Thickness", key = "menuBorder", min = 0, max = 6, default = 1,
+		order = 33, parent = page,
+		callback = function(v) if mainStroke then mainStroke.Thickness = v end end,
+	})
+	makeSliderRow({
+		name = "Floating Ghost Size", key = "ghostBtnSize", min = 40, max = 100, default = kToggleBtnSize,
+		order = 34, parent = page,
+		callback = function(v) toggleBtn.Size = UDim2.new(0, v, 0, v) end,
+	})
+	makeToggleRow({
+		name = "Hide Credit Line", desc = "Hides the 'made by' text in the title bar",
+		key = "hidecredit", color = Color3.fromRGB(190, 190, 255), order = 35, parent = page,
+		callback = function(on) creditLabel.Visible = not on end,
+	})
+end
+
+-- NOTES
+do
+	local page = pages.Notes
+	local function noteBox() return page:FindFirstChild("NotesBox", true) end
+	makeSection("QUICK INSERT", 10, page)
+	makeButtonRow({
+		text = "Insert Timestamp", order = 11, parent = page,
+		callback = function()
+			local b = noteBox()
+			if b then
+				b.Text = b.Text .. (b.Text ~= "" and "\n" or "") .. os.date("[%Y-%m-%d %H:%M] ")
+				settings.notes = b.Text
+				saveSettings()
+			end
+		end,
+	})
+	makeButtonRow({
+		text = "Insert My Coordinates", order = 12, parent = page,
+		callback = function()
+			local b = noteBox()
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if b and hrp then
+				local p = hrp.Position
+				b.Text = b.Text .. (b.Text ~= "" and "\n" or "") .. string.format("(%.0f, %.0f, %.0f) ", p.X, p.Y, p.Z)
+				settings.notes = b.Text
+				saveSettings()
+			end
+		end,
+	})
+	makeButtonRow({
+		text = "Count Words", order = 13, parent = page,
+		callback = function()
+			local b = noteBox()
+			if not b then return end
+			local n = 0
+			for _ in string.gmatch(b.Text, "%S+") do n = n + 1 end
+			notify(n .. " words, " .. #b.Text .. " characters")
+		end,
+	})
+end
+
+-- CONFIG
+do
+	local page = pages.Config
+	makeSection("EXTRA OPTIONS", 40, page)
+	makeToggleRow({
+		name = "Notification Sound", desc = "Soft ping with every toast",
+		opt = "sounds", color = Color3.fromRGB(190, 190, 255), order = 41, parent = page, callback = function() end,
+	})
+	makeButtonRow({
+		text = "Save Settings Now", order = 42, parent = page,
+		callback = function()
+			if not canFile then notify("Executor can't save files") return end
+			pcall(function() writefile(kSaveFile, HttpService:JSONEncode(settings)) end)
+			notify("Settings saved")
+		end,
+	})
+end
+
+----------------------------------------------------------------
+-- CAMERA TAB
+----------------------------------------------------------------
+do
+	local page = pages.Camera
+	makeSection("VIEW", 0, page)
+
+	-- ORBIT CAMERA
+	do
+		local conn, savedType
+		local speed, dist, angle = 30, 15, 0
+		local function stopOrbit()
+			disconnect(conn)
+			conn = nil
+			local cam = workspace.CurrentCamera
+			if cam and savedType then
+				cam.CameraType = savedType
+				local hum = getHumanoid()
+				if hum then cam.CameraSubject = hum end
+			end
+			savedType = nil
+		end
+		local function setOrbit(on)
+			stopOrbit()
+			if not on then return end
+			local cam = workspace.CurrentCamera
+			if not cam then return end
+			savedType = cam.CameraType
+			cam.CameraType = Enum.CameraType.Scriptable
+			conn = RunService.RenderStepped:Connect(function(dt)
+				local c = workspace.CurrentCamera
+				local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+				if not (c and hrp) then return end
+				angle = angle + math.rad(speed) * dt
+				local center = hrp.Position + Vector3.new(0, 2, 0)
+				local offset = Vector3.new(math.sin(angle) * dist, dist * 0.3, math.cos(angle) * dist)
+				c.CFrame = CFrame.lookAt(center + offset, center)
+			end)
+		end
+		onUnload(stopOrbit)
+		makeToggleRow({
+			name = "Orbit Camera", desc = "Camera circles around your character",
+			key = "orbitcam", color = Color3.fromRGB(110, 170, 255), order = 1, parent = page, callback = setOrbit,
+		})
+		makeSliderRow({
+			name = "Orbit Speed", key = "orbitSpeed", min = 5, max = 120, default = 30,
+			order = 2, parent = page, callback = function(v) speed = v end,
+		})
+		makeSliderRow({
+			name = "Orbit Distance", key = "orbitDist", min = 5, max = 60, default = 15,
+			order = 3, parent = page, callback = function(v) dist = v end,
+		})
+	end
+
+	-- CINEMATIC BARS
+	do
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "GhostedBars"
+		gui.ResetOnSpawn = false
+		gui.IgnoreGuiInset = true
+		gui.DisplayOrder = 10
+		gui.Enabled = false
+		gui.Parent = guiParent
+
+		local top = Instance.new("Frame")
+		top.Size = UDim2.new(1, 0, 0.12, 0)
+		top.BackgroundColor3 = Color3.new(0, 0, 0)
+		top.BorderSizePixel = 0
+		top.Parent = gui
+		local bottom = Instance.new("Frame")
+		bottom.AnchorPoint = Vector2.new(0, 1)
+		bottom.Position = UDim2.new(0, 0, 1, 0)
+		bottom.Size = UDim2.new(1, 0, 0.12, 0)
+		bottom.BackgroundColor3 = Color3.new(0, 0, 0)
+		bottom.BorderSizePixel = 0
+		bottom.Parent = gui
+
+		onUnload(function() gui:Destroy() end)
+		makeToggleRow({
+			name = "Cinematic Bars", desc = "Black letterbox bars top and bottom",
+			key = "cinebars", color = Color3.fromRGB(190, 190, 255), order = 4, parent = page,
+			callback = function(on) gui.Enabled = on end,
+		})
+		makeSliderRow({
+			name = "Bar Height %", key = "barHeight", min = 5, max = 25, default = 12,
+			order = 5, parent = page,
+			callback = function(v)
+				top.Size = UDim2.new(1, 0, v / 100, 0)
+				bottom.Size = UDim2.new(1, 0, v / 100, 0)
+			end,
+		})
+	end
+
+	-- FORCE SHIFT LOCK
+	do
+		local conn
+		makeToggleRow({
+			name = "Force Shift Lock", desc = "Locks the mouse to the center of the screen",
+			key = "forceshiftlock", color = Color3.fromRGB(255, 200, 90), order = 6, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if on then
+					conn = RunService.RenderStepped:Connect(function()
+						UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+					end)
+				else
+					UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+				end
+			end,
+		})
+	end
+
+	----------------------------------------------------------------
+	makeSection("POSITION", 10, page)
+
+	do
+		local off = { 0, 0, 0 }
+		local function apply()
+			local hum = getHumanoid()
+			if hum then hum.CameraOffset = Vector3.new(off[1], off[2], off[3]) end
+		end
+		track(player.CharacterAdded:Connect(function() task.wait(0.5) apply() end))
+		onUnload(function() off = { 0, 0, 0 } apply() end)
+		makeSliderRow({ name = "Camera Offset X", key = "camX", min = -10, max = 10, default = 0, order = 11, parent = page,
+			callback = function(v) off[1] = v apply() end })
+		makeSliderRow({ name = "Camera Offset Y", key = "camY", min = -10, max = 10, default = 0, order = 12, parent = page,
+			callback = function(v) off[2] = v apply() end })
+		makeSliderRow({ name = "Camera Offset Z", key = "camZ", min = -10, max = 10, default = 0, order = 13, parent = page,
+			callback = function(v) off[3] = v apply() end })
+	end
+
+	do
+		local origMin = player.CameraMinZoomDistance
+		makeSliderRow({
+			name = "Min Zoom", key = "minZoom", min = 0, max = 50,
+			default = math.clamp(math.floor(origMin + 0.5), 0, 50),
+			order = 14, parent = page,
+			callback = function(v) pcall(function() player.CameraMinZoomDistance = math.max(v, 0.5) end) end,
+		})
+		onUnload(function() pcall(function() player.CameraMinZoomDistance = origMin end) end)
+	end
+
+	makeButtonRow({
+		text = "Force Third Person", order = 15, parent = page,
+		callback = function()
+			pcall(function() player.CameraMode = Enum.CameraMode.Classic end)
+			notify("Third person")
+		end,
+	})
+	makeButtonRow({
+		text = "Reset Camera", order = 16, parent = page, color = Color3.fromRGB(120, 40, 50),
+		callback = function()
+			local cam = workspace.CurrentCamera
+			local hum = getHumanoid()
+			if cam then
+				cam.CameraType = Enum.CameraType.Custom
+				if hum then cam.CameraSubject = hum end
+				cam.FieldOfView = 70
+			end
+			notify("Camera reset")
+		end,
+	})
+end
+
+----------------------------------------------------------------
+-- AUDIO TAB
+----------------------------------------------------------------
+do
+	local page = pages.Audio
+	local SoundService = game:GetService("SoundService")
+
+	local function eachSound(fn)
+		for _, s in ipairs(workspace:GetDescendants()) do
+			if s:IsA("Sound") then fn(s) end
+		end
+		for _, s in ipairs(SoundService:GetDescendants()) do
+			if s:IsA("Sound") and s.Name ~= "GhostedSound" then fn(s) end
+		end
+	end
+
+	makeSection("GAME AUDIO", 0, page)
+
+	-- MUTE
+	do
+		local conn
+		local saved = setmetatable({}, { __mode = "k" })
+		local function sweep()
+			eachSound(function(s)
+				if saved[s] == nil then saved[s] = s.Volume end
+				s.Volume = 0
+			end)
+		end
+		makeToggleRow({
+			name = "Mute Game Sounds", desc = "Sets every in-game sound to silent",
+			key = "mutegame", color = Color3.fromRGB(255, 120, 150), order = 1, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if on then
+					sweep()
+					local acc = 0
+					conn = RunService.Heartbeat:Connect(function(dt)
+						acc = acc + dt
+						if acc >= 3 then acc = 0 pcall(sweep) end
+					end)
+				else
+					for s, v in pairs(saved) do
+						if s.Parent then pcall(function() s.Volume = v end) end
+						saved[s] = nil
+					end
+				end
+			end,
+		})
+	end
+
+	makeButtonRow({
+		text = "Stop All Sounds", order = 2, parent = page,
+		callback = function()
+			local n = 0
+			eachSound(function(s) pcall(function() s:Stop() end) n = n + 1 end)
+			notify("Stopped " .. n .. " sounds")
+		end,
+	})
+
+	----------------------------------------------------------------
+	makeSection("PLAY AN AUDIO ID", 10, page)
+
+	local snd
+	local volume, pitch, looped = 50, 100, false
+	local function getSnd()
+		if not snd or not snd.Parent then
+			snd = Instance.new("Sound")
+			snd.Name = "GhostedSound"
+			snd.Parent = SoundService
+		end
+		return snd
+	end
+	onUnload(function() if snd then snd:Destroy() end end)
+
+	local idBox
+	do
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 38)
+		row.BackgroundColor3 = kRowBg
+		row.LayoutOrder = 11
+		row.Parent = page
+		addCorner(row, 8)
+		idBox = Instance.new("TextBox")
+		idBox.Size = UDim2.new(1, -24, 1, 0)
+		idBox.Position = UDim2.new(0, 12, 0, 0)
+		idBox.BackgroundTransparency = 1
+		idBox.PlaceholderText = "audio asset id (numbers)..."
+		idBox.PlaceholderColor3 = kTextDim
+		idBox.Text = ""
+		idBox.TextColor3 = Color3.fromRGB(230, 230, 235)
+		idBox.Font = Enum.Font.Gotham
+		idBox.TextSize = 14
+		idBox.TextXAlignment = Enum.TextXAlignment.Left
+		idBox.ClearTextOnFocus = false
+		idBox.Parent = row
+	end
+
+	makeButtonRow({
+		text = "Play", order = 12, parent = page,
+		callback = function()
+			local digits = string.match(idBox.Text, "%d+")
+			if not digits then notify("Type an audio ID first") return end
+			local s = getSnd()
+			s:Stop()
+			s.SoundId = "rbxassetid://" .. digits
+			s.Looped = looped
+			s.Volume = volume / 100
+			s.PlaybackSpeed = pitch / 100
+			s:Play()
+			notify("Playing " .. digits)
+			task.delay(3, function()
+				if s.Parent and not s.IsPlaying and not s.IsLoaded then notify("That ID didn't load") end
+			end)
+		end,
+	})
+	makeButtonRow({
+		text = "Stop", order = 13, parent = page,
+		callback = function() if snd then snd:Stop() end end,
+	})
+	makeToggleRow({
+		name = "Loop", desc = "Repeat the sound",
+		key = "audioLoop", color = Color3.fromRGB(110, 170, 255), order = 14, parent = page,
+		callback = function(on)
+			looped = on
+			if snd then snd.Looped = on end
+		end,
+	})
+	makeSliderRow({
+		name = "Volume %", key = "audioVol", min = 0, max = 100, default = 50,
+		order = 15, parent = page,
+		callback = function(v) volume = v if snd then snd.Volume = v / 100 end end,
+	})
+	makeSliderRow({
+		name = "Pitch / Speed %", key = "audioPitch", min = 50, max = 200, default = 100,
+		order = 16, parent = page,
+		callback = function(v) pitch = v if snd then snd.PlaybackSpeed = v / 100 end end,
+	})
+end
+
+----------------------------------------------------------------
+-- SESSION TAB
+----------------------------------------------------------------
+do
+	local page = pages.Session
+	makeSection("THIS SESSION", 0, page)
+
+	local function infoRow(order, title)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 30)
+		row.BackgroundColor3 = kRowBg
+		row.LayoutOrder = order
+		row.Parent = page
+		addCorner(row, 8)
+		local a = Instance.new("TextLabel")
+		a.Size = UDim2.new(0, 120, 1, 0)
+		a.Position = UDim2.new(0, 12, 0, 0)
+		a.BackgroundTransparency = 1
+		a.Text = title
+		a.TextColor3 = kTextDim
+		a.Font = Enum.Font.GothamBold
+		a.TextSize = 12
+		a.TextXAlignment = Enum.TextXAlignment.Left
+		a.Parent = row
+		local b = Instance.new("TextLabel")
+		b.Size = UDim2.new(1, -140, 1, 0)
+		b.Position = UDim2.new(0, 132, 0, 0)
+		b.BackgroundTransparency = 1
+		b.Text = "0"
+		b.TextColor3 = Color3.fromRGB(230, 230, 235)
+		b.Font = Enum.Font.Gotham
+		b.TextSize = 12
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.Parent = row
+		return b
+	end
+
+	local timeLbl   = infoRow(1, "Time in Game")
+	local distLbl   = infoRow(2, "Distance Walked")
+	local jumpLbl   = infoRow(3, "Jumps")
+	local deathLbl  = infoRow(4, "Deaths")
+	local topLbl    = infoRow(5, "Top Speed")
+	local metLbl    = infoRow(6, "Players Met")
+	local peakLbl   = infoRow(7, "Peak Players")
+
+	local start = os.clock()
+	local dist, jumps, deaths, topSpeed, peak = 0, 0, 0, 0, 0
+	local met, metCount = {}, 0
+	local lastPos
+
+	local function hookChar(char)
+		local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
+		if hum then
+			hum.Died:Connect(function() deaths = deaths + 1 end)
+		end
+	end
+	if player.Character then task.spawn(hookChar, player.Character) end
+	track(player.CharacterAdded:Connect(hookChar))
+	track(UserInputService.JumpRequest:Connect(function() jumps = jumps + 1 end))
+
+	local acc = 1
+	track(RunService.Heartbeat:Connect(function(dt)
+		local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			local p = hrp.Position
+			if lastPos then
+				local d = (p - lastPos).Magnitude
+				if d < 50 then dist = dist + d end
+			end
+			lastPos = p
+			local spd = hrp.AssemblyLinearVelocity.Magnitude
+			if spd > topSpeed and spd < 1000 then topSpeed = spd end
+		else
+			lastPos = nil
+		end
+
+		acc = acc + dt
+		if acc < 1 then return end
+		acc = 0
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= player and not met[p.UserId] then
+				met[p.UserId] = true
+				metCount = metCount + 1
+			end
+		end
+		peak = math.max(peak, #Players:GetPlayers())
+		if not page.Visible then return end
+		local t = math.floor(os.clock() - start)
+		timeLbl.Text = string.format("%dh %dm %ds", math.floor(t / 3600), math.floor(t / 60) % 60, t % 60)
+		distLbl.Text = string.format("%.0f studs", dist)
+		jumpLbl.Text = tostring(jumps)
+		deathLbl.Text = tostring(deaths)
+		topLbl.Text = string.format("%.0f studs/s", topSpeed)
+		metLbl.Text = tostring(metCount)
+		peakLbl.Text = tostring(peak)
+	end))
+
+	makeButtonRow({
+		text = "Copy Session Stats", order = 10, parent = page,
+		callback = function()
+			local t = math.floor(os.clock() - start)
+			copyText(string.format(
+				"Time: %dm %ds\nDistance: %.0f studs\nJumps: %d\nDeaths: %d\nTop speed: %.0f\nPlayers met: %d\nPeak players: %d",
+				math.floor(t / 60), t % 60, dist, jumps, deaths, topSpeed, metCount, peak), "Stats")
+		end,
+	})
+	makeButtonRow({
+		text = "Reset Stats", order = 11, parent = page, color = Color3.fromRGB(120, 40, 50),
+		callback = function()
+			start = os.clock()
+			dist, jumps, deaths, topSpeed, peak = 0, 0, 0, 0, 0
+			met, metCount = {}, 0
+			notify("Stats reset")
+		end,
+	})
+end
+
+----------------------------------------------------------------
+-- AUTOMATION TAB
+----------------------------------------------------------------
+do
+	local page = pages.Automation
+	local VIM = game:GetService("VirtualInputManager")
+
+	local function myHrp() return player.Character and player.Character:FindFirstChild("HumanoidRootPart") end
+
+	makeSection("TIMED ACTIONS", 0, page)
+
+	-- AUTO RESET
+	do
+		local conn
+		local interval = 60
+		makeToggleRow({
+			name = "Auto Reset Character", desc = "Respawns you on a timer",
+			key = "autoreset", color = Color3.fromRGB(255, 100, 110), order = 1, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				local t = 0
+				conn = RunService.Heartbeat:Connect(function(dt)
+					t = t + dt
+					if t >= interval then
+						t = 0
+						local hum = getHumanoid()
+						if hum then hum.Health = 0 end
+					end
+				end)
+			end,
+		})
+		makeSliderRow({
+			name = "Reset Every (sec)", key = "autoResetSec", min = 10, max = 300, default = 60,
+			order = 2, parent = page, callback = function(v) interval = v end,
+		})
+	end
+
+	-- TIMED JUMP
+	do
+		local conn
+		local interval = 5
+		makeToggleRow({
+			name = "Timed Jump", desc = "Jumps every few seconds",
+			key = "timedjump", color = Color3.fromRGB(90, 230, 150), order = 3, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				local t = 0
+				conn = RunService.Heartbeat:Connect(function(dt)
+					t = t + dt
+					if t >= interval then
+						t = 0
+						local hum = getHumanoid()
+						if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+					end
+				end)
+			end,
+		})
+		makeSliderRow({
+			name = "Jump Every (sec)", key = "timedJumpSec", min = 1, max = 30, default = 5,
+			order = 4, parent = page, callback = function(v) interval = v end,
+		})
+	end
+
+	-- AUTO PRESS E
+	do
+		local conn
+		local interval = 10
+		makeToggleRow({
+			name = "Auto Press E", desc = "Taps the E key on a timer",
+			key = "autoE", color = Color3.fromRGB(255, 200, 90), order = 5, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				local t = 0
+				conn = RunService.Heartbeat:Connect(function(dt)
+					t = t + dt
+					if t >= interval / 10 then
+						t = 0
+						pcall(function()
+							VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+							task.delay(0.05, function() VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game) end)
+						end)
+					end
+				end)
+			end,
+		})
+		makeSliderRow({
+			name = "Press Interval (x0.1 sec)", key = "autoEInterval", min = 2, max = 100, default = 10,
+			order = 6, parent = page, callback = function(v) interval = v end,
+		})
+	end
+
+	----------------------------------------------------------------
+	makeSection("MOVEMENT PATTERNS", 10, page)
+
+	-- RANDOM WALK
+	do
+		local conn
+		makeToggleRow({
+			name = "Random Walk", desc = "Wanders around (good anti-AFK)",
+			key = "randomwalk", color = Color3.fromRGB(130, 200, 255), order = 11, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if on then
+					local t, walking = 0, false
+					conn = RunService.Heartbeat:Connect(function(dt)
+						t = t + dt
+						if t < 2.5 then return end
+						t = 0
+						local hum = getHumanoid()
+						if not hum then return end
+						walking = not walking
+						if walking then
+							local a = math.random() * math.pi * 2
+							hum:Move(Vector3.new(math.cos(a), 0, math.sin(a)), false)
+						else
+							hum:Move(Vector3.zero, false)
+						end
+					end)
+				else
+					local hum = getHumanoid()
+					if hum then hum:Move(Vector3.zero, false) end
+				end
+			end,
+		})
+	end
+
+	-- WALK IN CIRCLES
+	do
+		local conn
+		makeToggleRow({
+			name = "Walk in Circles", desc = "Keeps turning while walking",
+			key = "circlewalk", color = Color3.fromRGB(180, 130, 255), order = 12, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if on then
+					local a = 0
+					conn = RunService.Heartbeat:Connect(function(dt)
+						a = a + dt * 1.5
+						local hum = getHumanoid()
+						if hum then hum:Move(Vector3.new(math.cos(a), 0, math.sin(a)), false) end
+					end)
+				else
+					local hum = getHumanoid()
+					if hum then hum:Move(Vector3.zero, false) end
+				end
+			end,
+		})
+	end
+
+	----------------------------------------------------------------
+	makeSection("AUTO COLLECT", 20, page)
+
+	-- AUTO COLLECT TOOLS
+	do
+		local conn
+		makeToggleRow({
+			name = "Auto Collect Tools", desc = "Touches loose tools within 40 studs",
+			key = "autocollect", color = Color3.fromRGB(255, 220, 90), order = 21, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				if typeof(firetouchinterest) ~= "function" then notify("Executor has no firetouchinterest") end
+				local t = 0
+				conn = RunService.Heartbeat:Connect(function(dt)
+					t = t + dt
+					if t < 1 then return end
+					t = 0
+					local hrp = myHrp()
+					if not hrp or typeof(firetouchinterest) ~= "function" then return end
+					for _, d in ipairs(workspace:GetDescendants()) do
+						if d:IsA("Tool") then
+							local h = d:FindFirstChild("Handle")
+							local m = d:FindFirstAncestorOfClass("Model")
+							if h and not (m and m:FindFirstChildOfClass("Humanoid"))
+								and (h.Position - hrp.Position).Magnitude <= 40 then
+								pcall(firetouchinterest, hrp, h, 0)
+								pcall(firetouchinterest, hrp, h, 1)
+							end
+						end
+					end
+				end)
+			end,
+		})
+	end
+
+	-- AUTO FIRE PROMPTS
+	do
+		local conn
+		local radius = 15
+		makeToggleRow({
+			name = "Auto Fire Prompts", desc = "Triggers nearby proximity prompts",
+			key = "autoprompts", color = Color3.fromRGB(255, 150, 60), order = 22, parent = page,
+			callback = function(on)
+				disconnect(conn)
+				conn = nil
+				if not on then return end
+				if typeof(fireproximityprompt) ~= "function" then notify("Executor has no fireproximityprompt") end
+				local t = 0
+				conn = RunService.Heartbeat:Connect(function(dt)
+					t = t + dt
+					if t < 0.5 then return end
+					t = 0
+					local hrp = myHrp()
+					if not hrp or typeof(fireproximityprompt) ~= "function" then return end
+					for _, d in ipairs(workspace:GetDescendants()) do
+						if d:IsA("ProximityPrompt") then
+							local part = d.Parent
+							if part and part:IsA("BasePart") and (part.Position - hrp.Position).Magnitude <= radius then
+								pcall(fireproximityprompt, d)
+							end
+						end
+					end
+				end)
+			end,
+		})
+		makeSliderRow({
+			name = "Prompt Radius", key = "promptRadius", min = 5, max = 40, default = 15,
+			order = 23, parent = page, callback = function(v) radius = v end,
+		})
+	end
+end
+
+----------------------------------------------------------------
+-- TELEPORTS TAB
+----------------------------------------------------------------
+do
+	local page = pages.Teleports
+	local placeKey = tostring(game.PlaceId)
+	settings.places = settings.places or {}
+	settings.places[placeKey] = settings.places[placeKey] or {}
+	local list = settings.places[placeKey]
+	local lastCF
+
+	local function myHrp() return player.Character and player.Character:FindFirstChild("HumanoidRootPart") end
+	local function remember()
+		local h = myHrp()
+		if h then lastCF = h.CFrame end
+	end
+
+	makeSection("SAVED LOCATIONS  (per game)", 0, page)
+
+	local nameBox
+	do
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 38)
+		row.BackgroundColor3 = kRowBg
+		row.LayoutOrder = 1
+		row.Parent = page
+		addCorner(row, 8)
+		nameBox = Instance.new("TextBox")
+		nameBox.Size = UDim2.new(1, -24, 1, 0)
+		nameBox.Position = UDim2.new(0, 12, 0, 0)
+		nameBox.BackgroundTransparency = 1
+		nameBox.PlaceholderText = "name for this spot..."
+		nameBox.PlaceholderColor3 = kTextDim
+		nameBox.Text = ""
+		nameBox.TextColor3 = Color3.fromRGB(230, 230, 235)
+		nameBox.Font = Enum.Font.Gotham
+		nameBox.TextSize = 14
+		nameBox.TextXAlignment = Enum.TextXAlignment.Left
+		nameBox.ClearTextOnFocus = false
+		nameBox.Parent = row
+	end
+
+	local rows = {}
+	local rebuild
+	rebuild = function()
+		for _, r in ipairs(rows) do r:Destroy() end
+		rows = {}
+		for i, loc in ipairs(list) do
+			local row = Instance.new("Frame")
+			row.Size = UDim2.new(1, 0, 0, 38)
+			row.BackgroundColor3 = kRowBg
+			row.LayoutOrder = 10 + i
+			row.Parent = page
+			addCorner(row, 8)
+			rows[#rows + 1] = row
+
+			local lbl = Instance.new("TextLabel")
+			lbl.Size = UDim2.new(1, -130, 1, 0)
+			lbl.Position = UDim2.new(0, 12, 0, 0)
+			lbl.BackgroundTransparency = 1
+			lbl.Text = loc.name
+			lbl.TextColor3 = Color3.fromRGB(230, 230, 235)
+			lbl.Font = Enum.Font.Gotham
+			lbl.TextSize = 13
+			lbl.TextXAlignment = Enum.TextXAlignment.Left
+			lbl.TextTruncate = Enum.TextTruncate.AtEnd
+			lbl.Parent = row
+
+			local function small(text, xOff, color, fn)
+				local b = Instance.new("TextButton")
+				b.AnchorPoint = Vector2.new(1, 0.5)
+				b.Position = UDim2.new(1, xOff, 0.5, 0)
+				b.Size = UDim2.new(0, 46, 0, 26)
+				b.BackgroundColor3 = color
+				b.Text = text
+				b.TextColor3 = Color3.new(1, 1, 1)
+				b.Font = Enum.Font.GothamBold
+				b.TextSize = 11
+				b.AutoButtonColor = false
+				b.Parent = row
+				addCorner(b, 6)
+				track(b.MouseButton1Click:Connect(fn))
+				return b
+			end
+			local go = small("Go", -58, accent, function()
+				local h = myHrp()
+				if not h then notify("No character") return end
+				remember()
+				h.CFrame = CFrame.new(loc.x, loc.y, loc.z)
+				notify("Teleported to " .. loc.name)
+			end)
+			bindAccent(go, "BackgroundColor3")
+			small("Del", -8, Color3.fromRGB(120, 40, 50), function()
+				table.remove(list, i)
+				saveSettings()
+				rebuild()
+			end)
+		end
+	end
+	rebuild()
+
+	makeButtonRow({
+		text = "Save Current Position", order = 2, parent = page,
+		callback = function()
+			local h = myHrp()
+			if not h then notify("No character") return end
+			local name = nameBox.Text ~= "" and nameBox.Text or ("Spot " .. (#list + 1))
+			local p = h.Position
+			list[#list + 1] = { name = name, x = p.X, y = p.Y, z = p.Z }
+			nameBox.Text = ""
+			saveSettings()
+			rebuild()
+			notify("Saved " .. name)
+		end,
+	})
+
+	----------------------------------------------------------------
+	makeSection("QUICK TELEPORTS", 100, page)
+
+	local playerBox
+	do
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 38)
+		row.BackgroundColor3 = kRowBg
+		row.LayoutOrder = 101
+		row.Parent = page
+		addCorner(row, 8)
+		playerBox = Instance.new("TextBox")
+		playerBox.Size = UDim2.new(1, -24, 1, 0)
+		playerBox.Position = UDim2.new(0, 12, 0, 0)
+		playerBox.BackgroundTransparency = 1
+		playerBox.PlaceholderText = "player name (partial is fine)..."
+		playerBox.PlaceholderColor3 = kTextDim
+		playerBox.Text = ""
+		playerBox.TextColor3 = Color3.fromRGB(230, 230, 235)
+		playerBox.Font = Enum.Font.Gotham
+		playerBox.TextSize = 14
+		playerBox.TextXAlignment = Enum.TextXAlignment.Left
+		playerBox.ClearTextOnFocus = false
+		playerBox.Parent = row
+	end
+	makeButtonRow({
+		text = "Teleport to That Player", order = 102, parent = page,
+		callback = function()
+			local q = string.lower(playerBox.Text)
+			if q == "" then notify("Type a name first") return end
+			local hrp = myHrp()
+			if not hrp then notify("No character") return end
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= player and (string.sub(string.lower(p.Name), 1, #q) == q
+					or string.sub(string.lower(p.DisplayName), 1, #q) == q) then
+					local th = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+					if th then
+						remember()
+						hrp.CFrame = th.CFrame * CFrame.new(0, 0, 3)
+						notify("Teleported to " .. p.DisplayName)
+						return
+					end
+				end
+			end
+			notify("No matching player")
+		end,
+	})
+
+	local radius = 100
+	makeSliderRow({
+		name = "Random Teleport Radius", key = "tpRadius", min = 10, max = 500, default = 100,
+		order = 103, parent = page, callback = function(v) radius = v end,
+	})
+	makeButtonRow({
+		text = "Random Teleport Nearby", order = 104, parent = page,
+		callback = function()
+			local hrp = myHrp()
+			if not hrp then notify("No character") return end
+			remember()
+			local a = math.random() * math.pi * 2
+			local d = math.random() * radius
+			local target = hrp.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d)
+			local params = RaycastParams.new()
+			params.FilterDescendantsInstances = { player.Character }
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			local hit = workspace:Raycast(target + Vector3.new(0, 300, 0), Vector3.new(0, -1000, 0), params)
+			if hit then
+				hrp.CFrame = CFrame.new(hit.Position + Vector3.new(0, 3.5, 0))
+			else
+				hrp.CFrame = CFrame.new(target)
+			end
+		end,
+	})
+	makeButtonRow({
+		text = "Return to Previous Spot", order = 105, parent = page,
+		callback = function()
+			local hrp = myHrp()
+			if not hrp then notify("No character") return end
+			if not lastCF then notify("Nothing to return to") return end
+			local cur = hrp.CFrame
+			hrp.CFrame = lastCF
+			lastCF = cur
+			notify("Swapped back")
+		end,
+	})
+end
+
+----------------------------------------------------------------
+-- CREDITS TAB
+----------------------------------------------------------------
+do
+	local page = pages.Credits
+	makeSection("ABOUT", 0, page)
+
+	local function card(order, title, body)
+		local f = Instance.new("Frame")
+		f.Size = UDim2.new(1, 0, 0, 0)
+		f.AutomaticSize = Enum.AutomaticSize.Y
+		f.BackgroundColor3 = kRowBg
+		f.LayoutOrder = order
+		f.Parent = page
+		addCorner(f, 8)
+		local pad = Instance.new("UIPadding")
+		pad.PaddingTop = UDim.new(0, 10)
+		pad.PaddingBottom = UDim.new(0, 10)
+		pad.PaddingLeft = UDim.new(0, 12)
+		pad.PaddingRight = UDim.new(0, 12)
+		pad.Parent = f
+		local l = Instance.new("UIListLayout")
+		l.Padding = UDim.new(0, 4)
+		l.SortOrder = Enum.SortOrder.LayoutOrder
+		l.Parent = f
+
+		local t = Instance.new("TextLabel")
+		t.Size = UDim2.new(1, 0, 0, 20)
+		t.BackgroundTransparency = 1
+		t.Text = title
+		t.TextColor3 = Color3.new(1, 1, 1)
+		t.Font = Enum.Font.GothamBold
+		t.TextSize = 15
+		t.TextXAlignment = Enum.TextXAlignment.Left
+		t.LayoutOrder = 1
+		t.Parent = f
+		bindAccent(t, "TextColor3")
+
+		local b = Instance.new("TextLabel")
+		b.Size = UDim2.new(1, 0, 0, 0)
+		b.AutomaticSize = Enum.AutomaticSize.Y
+		b.BackgroundTransparency = 1
+		b.Text = body
+		b.TextColor3 = Color3.fromRGB(200, 200, 215)
+		b.Font = Enum.Font.Gotham
+		b.TextSize = 12
+		b.TextWrapped = true
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.TextYAlignment = Enum.TextYAlignment.Top
+		b.LayoutOrder = 2
+		b.Parent = f
+	end
+
+	card(1, "Ghosted Menu", "A universal menu for PC and mobile. Open it with the floating ghost or your menu key (RightShift by default).")
+	card(2, "Made by", "Dani & Elixir & Hade")
+	card(3, "Tips", "Right-click any toggle on PC to give it a key. Press End to switch everything off at once. Your settings, presets, notes and saved locations are stored in " .. kSaveFile .. ".")
+
+	makeButtonRow({
+		text = "Copy Discord Link", order = 10, parent = page,
+		callback = function() copyText(kDiscordLink, "Discord link") end,
+	})
+	makeButtonRow({
+		text = "Count Features", order = 11, parent = page,
+		callback = function()
+			local n = 0
+			for _ in pairs(featureToggles) do n = n + 1 end
+			local s = 0
+			for _ in pairs(sliderResets) do s = s + 1 end
+			notify(n .. " toggles, " .. s .. " sliders, " .. #tabNames .. " tabs")
+		end,
+	})
+end
+
+----------------------------------------------------------------
 -- UPDATES TAB
 ----------------------------------------------------------------
 do
 	local updatesPage = pages.Updates
-	local kVersion = "1.5"
+	local kVersion = "1.7"
 
 	local header = makeSection("CURRENT VERSION  v" .. kVersion, 0, updatesPage)
 
 	local updates = {
 		{
-			version = "v1.5", title = "Chat, Tools and lots more", latest = true,
+			version = "v1.7", title = "Every tab filled in", latest = true,
+			items = {
+				"New Camera tab: Orbit Camera, Cinematic Bars, Force Shift Lock, camera offsets, Min Zoom, Reset Camera",
+				"New Audio tab: Mute Game Sounds, Stop All Sounds, play any audio ID with volume, pitch and loop",
+				"New Session tab: time, distance, jumps, deaths, top speed and players met",
+				"New Automation tab: Auto Reset, Timed Jump, Auto Press E, Random Walk, Walk in Circles, Auto Collect, Auto Fire Prompts",
+				"New Teleports tab: named saved locations per game, teleport to player by name, random teleport, return",
+				"New Credits tab",
+				"More in older tabs: Auto Jump and speed presets (Move), Personal Light, Night Vision, Tool ESP, Highlight Self (Visuals), Friend Alert and Highlight Friends (Players), Hide Roblox UI, Auto Rejoin, Unlock Mouse (Misc)",
+				"More in older tabs: Rocket Boost (Extra), Face Cursor and Ragdoll Self (Fun), Bloom, Sun Rays, Water Transparency (World), Mention Alert (Chat), Radar and Death Notifier (Combat)",
+				"Themes: title font, corner roundness, border thickness, ghost size. Config: notification sound, Save Now",
+			},
+		},
+		{
+			version = "v1.6", title = "Six new tabs",
+			items = {
+				"New Combat tab: Hitbox Expander, Auto Attack, Low Health Alert, Target Info",
+				"New Server tab: live server info, Copy Join Script, Hop to Smallest / Fullest Server",
+				"New Presets tab: PvP, Explorer, Speedrun, ESP Only and AFK profiles plus 3 save slots of your own",
+				"New Keybinds tab: list and clear your binds, plus an on-screen Keybind Overlay",
+				"New Themes tab: custom RGB accent, Rainbow Accent, Random Accent, custom menu title",
+				"New Notes tab: a scratchpad that saves with your settings",
+				"Tools: three Quick Slots to save and return to spots (Alt+1/2/3)",
+				"Fly can now be keybound and saved",
+			},
+		},
+		{
+			version = "v1.5", title = "Chat, Tools and lots more",
 			items = {
 				"New Chat tab: send messages, emotes, Chat Logger with copy/clear, Join / Leave Alerts",
 				"New Tools tab: Info HUD, Spectate Next/Previous, teleport to nearest/random player, Follow Nearest Player",
@@ -5200,3 +7996,4 @@ if opts.splash then
 else
 	finishLoad()
 end
+
